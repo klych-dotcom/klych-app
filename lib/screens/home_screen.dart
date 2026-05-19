@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -18,19 +20,29 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   String organizationName = 'KLYCH SERVER';
   String inviteCode = '------';
+  String? organizationId;
 
   bool loading = true;
   bool regeneratingCode = false;
 
   final AssetsAudioPlayer player = AssetsAudioPlayer();
-
   final TextEditingController alertMessageController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-
     loadData();
+  }
+
+  @override
+  void dispose() {
+    player.stop();
+    Vibration.cancel();
+
+    player.dispose();
+    alertMessageController.dispose();
+
+    super.dispose();
   }
 
   Future<void> loadData() async {
@@ -39,108 +51,125 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (user == null) return;
 
+      // USER
       final userData = await supabase
           .from('users')
-          .select()
+          .select('organization_id')
           .eq('auth_id', user.id)
           .single();
 
+      organizationId = userData['organization_id'];
+
+      // ORGANIZATION
       final organization = await supabase
           .from('organizations')
-          .select()
-          .eq('id', userData['organization_id'])
+          .select('name')
+          .eq('id', organizationId!)
           .single();
 
-      organizationName = organization['name'];
+      if (!mounted) return;
 
+      setState(() {
+        organizationName = organization['name'];
+      });
+
+      // INVITE
       final invite = await supabase
           .from('invites')
-          .select()
-          .eq('organization_id', organization['id'])
+          .select('code')
+          .eq('organization_id', organizationId!)
           .maybeSingle();
 
+      if (!mounted) return;
+
       if (invite != null) {
-        inviteCode = invite['code'];
+        setState(() {
+          inviteCode = invite['code'];
+        });
       } else {
-        final generatedCode = DateTime.now().millisecondsSinceEpoch
-            .toString()
-            .substring(7);
+        final random = Random();
+
+        final generatedCode = (100000 + random.nextInt(900000)).toString();
 
         await supabase.from('invites').insert({
-          'organization_id': organization['id'],
+          'organization_id': organizationId,
           'code': generatedCode,
           'permission': 'member',
         });
 
-        inviteCode = generatedCode;
+        setState(() {
+          inviteCode = generatedCode;
+        });
       }
     } catch (e) {
-      print(e);
+      _showErrorSnackBar('Помилка завантаження даних: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          loading = false;
+        });
+      }
     }
-
-    setState(() {
-      loading = false;
-    });
   }
 
   Future<void> regenerateInviteCode() async {
+    if (organizationId == null) return;
+
     try {
       setState(() {
         regeneratingCode = true;
       });
 
-      final user = supabase.auth.currentUser;
+      final random = Random();
 
-      if (user == null) return;
-
-      final userData = await supabase
-          .from('users')
-          .select()
-          .eq('auth_id', user.id)
-          .single();
-
-      final newCode =
-          (100000 + (DateTime.now().millisecondsSinceEpoch % 900000))
-              .toString();
+      final newCode = (100000 + random.nextInt(900000)).toString();
 
       await supabase
           .from('invites')
           .update({'code': newCode})
-          .eq('organization_id', userData['organization_id']);
+          .eq('organization_id', organizationId!);
 
       await Future.delayed(const Duration(milliseconds: 500));
+
+      if (!mounted) return;
 
       setState(() {
         inviteCode = newCode;
       });
 
-      if (!mounted) return;
-
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Код-запрошення оновлено')));
     } catch (e) {
-      print(e);
+      _showErrorSnackBar('Не вдалося оновити код: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          regeneratingCode = false;
+        });
+      }
     }
-
-    setState(() {
-      regeneratingCode = false;
-    });
   }
 
   Future<void> logout() async {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const StartScreen()),
-      (route) => false,
-    );
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const StartScreen()),
+        (route) => false,
+      );
+    } catch (e) {
+      _showErrorSnackBar('Помилка виходу: $e');
+    }
   }
 
   Future<void> testAlert() async {
+    if (organizationId == null) return;
+
     try {
       FocusScope.of(context).unfocus();
 
@@ -148,40 +177,45 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (user == null) return;
 
-      final userData = await supabase
-          .from('users')
-          .select()
-          .eq('auth_id', user.id)
-          .single();
+      final messageText = alertMessageController.text.trim();
 
+      final alertMessage = messageText.isEmpty
+          ? '🚨 ТЕСТОВА ТРИВОГА'
+          : messageText;
+
+      // SAVE ALERT
       await supabase.from('alerts').insert({
-        'organization_id': userData['organization_id'],
-        'message': alertMessageController.text.trim().isEmpty
-            ? '🚨 ТЕСТОВА ТРИВОГА'
-            : alertMessageController.text.trim(),
+        'organization_id': organizationId,
+        'message': alertMessage,
         'type': 'GENERAL',
         'created_by': user.id,
         'created_by_name': 'ADMIN',
       });
 
+      // AUDIO
       await player.open(
         Audio("assets/alarm.mp3"),
         autoStart: true,
         loopMode: LoopMode.single,
       );
 
+      // VIBRATION
       final hasVibrator = await Vibration.hasVibrator() ?? false;
 
       if (hasVibrator) {
-        Vibration.vibrate(pattern: [0, 1000, 500, 1000], repeat: 0);
+        Vibration.vibrate(
+          pattern: [0, 1000, 500, 1000],
+          repeat: 0, // Повторюємо патерн постійно, поки не натиснуть "ЗУПИНИТИ"
+        );
       }
 
       if (!mounted) return;
 
+      // ALERT DIALOG
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) {
+        builder: (dialogContext) {
           return AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
 
@@ -206,10 +240,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
 
             content: Text(
-              alertMessageController.text.trim().isEmpty
-                  ? 'Тестова тривога активована'
-                  : alertMessageController.text.trim(),
-
+              alertMessage,
               style: const TextStyle(color: Colors.white70, fontSize: 16),
             ),
 
@@ -220,9 +251,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   Vibration.cancel();
 
-                  if (!mounted) return;
+                  if (!dialogContext.mounted) return;
 
-                  Navigator.pop(context);
+                  // Закриваємо саме діалогове вікно через його власний context
+                  Navigator.pop(dialogContext);
 
                   alertMessageController.clear();
                 },
@@ -240,21 +272,16 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       );
     } catch (e) {
-      print(e);
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(e.toString())));
+      _showErrorSnackBar('Помилка активації тривоги: $e');
     }
   }
 
-  @override
-  void dispose() {
-    player.dispose();
+  void _showErrorSnackBar(String message) {
+    if (!mounted) return;
 
-    alertMessageController.dispose();
-
-    super.dispose();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red.shade900),
+    );
   }
 
   @override
@@ -277,6 +304,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
 
                     children: [
+                      // HEADER
                       Row(
                         children: [
                           Container(
@@ -322,6 +350,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                           IconButton(
                             onPressed: logout,
+
                             icon: const Icon(
                               Icons.logout,
                               color: Colors.white54,
@@ -332,6 +361,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       const SizedBox(height: 36),
 
+                      // INVITE CARD
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(24),
@@ -394,6 +424,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                                 const SizedBox(width: 10),
 
+                                // COPY
                                 IconButton(
                                   onPressed: () async {
                                     await Clipboard.setData(
@@ -415,8 +446,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
 
+                                // REFRESH
                                 AnimatedRotation(
-                                  turns: regeneratingCode ? 1 : 0,
+                                  turns: regeneratingCode ? 0.5 : 0,
 
                                   duration: const Duration(milliseconds: 500),
 
@@ -439,6 +471,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       const SizedBox(height: 28),
 
+                      // ALERT MESSAGE
                       TextField(
                         controller: alertMessageController,
 
@@ -448,6 +481,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                         decoration: InputDecoration(
                           hintText: 'Повідомлення до тривоги...',
+
                           hintStyle: const TextStyle(color: Colors.white38),
 
                           filled: true,
@@ -472,6 +506,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       const SizedBox(height: 20),
 
+                      // ALERT BUTTON
                       SizedBox(
                         width: double.infinity,
                         height: 64,
@@ -486,6 +521,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                           label: const Text(
                             'ТЕСТ ТРИВОГИ',
+
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
@@ -505,6 +541,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       const SizedBox(height: 18),
 
+                      // USERS BUTTON
                       SizedBox(
                         width: double.infinity,
                         height: 58,
@@ -526,6 +563,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                           label: const Text(
                             'КОРИСТУВАЧІ',
+
                             style: TextStyle(
                               color: Colors.white70,
                               fontWeight: FontWeight.w600,
@@ -544,9 +582,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       const Spacer(),
 
+                      // FOOTER
                       Center(
                         child: Text(
                           'KLYCH Emergency System',
+
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.22),
                             fontSize: 12,

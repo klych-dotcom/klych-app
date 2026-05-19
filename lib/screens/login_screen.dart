@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
 import 'home_screen.dart';
+import 'member_home_screen.dart'; // Додано імпорт екрана бійця
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,33 +18,77 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool loading = false;
 
+  @override
+  void dispose() {
+    emailController.dispose();
+    passwordController.dispose();
+    super.dispose();
+  }
+
   Future<void> login() async {
+    // Валідація порожніх полів перед запитом до мережі
+    if (emailController.text.trim().isEmpty ||
+        passwordController.text.trim().isEmpty) {
+      _showSnackBar('Заповніть усі поля');
+      return;
+    }
+
     try {
       setState(() {
         loading = true;
       });
 
-      await supabase.auth.signInWithPassword(
+      // Авторизація через Supabase Auth
+      final AuthResponse res = await supabase.auth.signInWithPassword(
         email: emailController.text.trim(),
         password: passwordController.text.trim(),
       );
 
+      final user = res.user;
+      if (user == null) throw Exception('Користувача не знайдено');
+
+      // Перевірка ролі користувача у твоїй таблиці public.users
+      final userData = await supabase
+          .from('users')
+          .select('permission')
+          .eq('auth_id', user.id)
+          .single();
+
+      final permission = userData['permission']?.toString().toLowerCase();
+
       if (!mounted) return;
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-        (route) => false,
-      );
+      // Розумна навігація на основі поля permission з твоєї БД
+      if (permission == 'admin') {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          (route) => false,
+        );
+      } else {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
+          (route) => false,
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(e.toString())));
-    }
+      if (!mounted) return;
+      // Гарне виведення помилки (наприклад, якщо неправильний пароль)
+      _showSnackBar('Помилка входу: ${e.toString()}');
 
-    setState(() {
-      loading = false;
-    });
+      if (mounted) {
+        setState(() {
+          loading = false;
+        });
+      }
+    }
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red.shade900),
+    );
   }
 
   InputDecoration field(String text) {
@@ -51,6 +97,7 @@ class _LoginScreenState extends State<LoginScreen> {
       hintStyle: const TextStyle(color: Colors.white38),
       filled: true,
       fillColor: const Color(0xFF1A1A1C),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
         borderSide: BorderSide.none,
@@ -62,75 +109,72 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0F0F10),
-
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
-
           child: Column(
             children: [
               Align(
                 alignment: Alignment.centerLeft,
-
                 child: IconButton(
                   onPressed: () {
                     Navigator.pop(context);
                   },
-
                   icon: const Icon(
                     Icons.arrow_back_ios_new,
                     color: Colors.white,
                   ),
                 ),
               ),
-
               const Spacer(),
-
               const Text(
                 'ВХІД',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 40,
                   fontWeight: FontWeight.bold,
+                  letterSpacing: 1,
                 ),
               ),
-
               const SizedBox(height: 50),
-
               TextField(
                 controller: emailController,
+                keyboardType: TextInputType.emailAddress,
                 style: const TextStyle(color: Colors.white),
                 decoration: field('Email'),
               ),
-
               const SizedBox(height: 18),
-
               TextField(
                 controller: passwordController,
                 obscureText: true,
                 style: const TextStyle(color: Colors.white),
                 decoration: field('Пароль'),
               ),
-
               const SizedBox(height: 34),
-
               SizedBox(
                 width: double.infinity,
                 height: 64,
-
                 child: ElevatedButton(
                   onPressed: loading ? null : login,
-
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red.shade700,
-
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.red.shade900.withOpacity(
+                      0.5,
+                    ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-
                   child: loading
-                      ? const CircularProgressIndicator(color: Colors.white)
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2.5,
+                          ),
+                        )
                       : const Text(
                           'УВІЙТИ',
                           style: TextStyle(
@@ -140,7 +184,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                 ),
               ),
-
               const Spacer(),
             ],
           ),

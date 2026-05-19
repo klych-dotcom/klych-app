@@ -10,33 +10,29 @@ class StartScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0F0F10),
-
       body: Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 28),
-
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
-
             children: [
+              // Логотип системи оповіщення
               Container(
                 width: 110,
                 height: 110,
-
                 decoration: BoxDecoration(
                   color: Colors.red.shade700,
                   borderRadius: BorderRadius.circular(32),
                 ),
-
                 child: const Icon(
                   Icons.warning_rounded,
                   color: Colors.white,
                   size: 58,
                 ),
               ),
-
               const SizedBox(height: 38),
 
+              // Назва додатку
               const Text(
                 'KLYCH',
                 style: TextStyle(
@@ -46,20 +42,18 @@ class StartScreen extends StatelessWidget {
                   letterSpacing: 1.5,
                 ),
               ),
-
               const SizedBox(height: 10),
 
               const Text(
                 'Emergency Alert System',
                 style: TextStyle(color: Colors.white54, fontSize: 16),
               ),
-
               const SizedBox(height: 70),
 
+              // Кнопка: Створити сервер
               SizedBox(
                 width: double.infinity,
                 height: 64,
-
                 child: ElevatedButton(
                   onPressed: () {
                     Navigator.push(
@@ -69,28 +63,30 @@ class StartScreen extends StatelessWidget {
                       ),
                     );
                   },
-
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red.shade700,
-
+                    shadowColor:
+                        Colors.transparent, // Прибираємо зайві тіні матеріалу
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-
                   child: const Text(
                     'СТВОРИТИ СЕРВЕР',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white, // Явно фіксуємо білий колір тексту
+                    ),
                   ),
                 ),
               ),
-
               const SizedBox(height: 18),
 
+              // Кнопка: Підключитись
               SizedBox(
                 width: double.infinity,
                 height: 64,
-
                 child: OutlinedButton(
                   onPressed: () {
                     Navigator.push(
@@ -100,15 +96,12 @@ class StartScreen extends StatelessWidget {
                       ),
                     );
                   },
-
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: Colors.white24),
-
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-
                   child: const Text(
                     'ПІДКЛЮЧИТИСЬ',
                     style: TextStyle(

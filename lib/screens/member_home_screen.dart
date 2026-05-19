@@ -1,10 +1,15 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:assets_audio_player/assets_audio_player.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:assets_audio_player/assets_audio_player.dart';
 import 'package:vibration/vibration.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
 
 import '../main.dart';
-import 'start_screen.dart';
+import 'alert_screen.dart';
+import 'join_server_screen.dart';
 
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({super.key});
@@ -26,13 +31,14 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
   List<Map<String, dynamic>> alerts = [];
 
+  DateTime? clearedAt;
+
   @override
   void initState() {
     super.initState();
 
     loadUser();
-
-    loadHistory();
+    loadLocalAlerts();
 
     subscribeAlerts();
   }
@@ -65,34 +71,65 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
     }
   }
 
-  Future<void> loadHistory() async {
+  Future<void> loadLocalAlerts() async {
     try {
-      final user = supabase.auth.currentUser;
+      final prefs = await SharedPreferences.getInstance();
 
-      if (user == null) return;
+      final cleared = prefs.getString('alerts_cleared_at');
 
-      final userData = await supabase
-          .from('users')
-          .select()
-          .eq('auth_id', user.id)
-          .single();
+      if (cleared != null) {
+        clearedAt = DateTime.tryParse(cleared);
+      }
 
-      final organizationId = userData['organization_id'];
+      final alertsJson = prefs.getString('alerts_history');
 
-      final yesterday = DateTime.now()
-          .subtract(const Duration(hours: 24))
-          .toIso8601String();
+      if (alertsJson == null) return;
 
-      final history = await supabase
-          .from('alerts')
-          .select()
-          .eq('organization_id', organizationId)
-          .gte('created_at', yesterday)
-          .order('created_at', ascending: false)
-          .limit(30);
+      final decoded = jsonDecode(alertsJson);
+
+      final loadedAlerts = List<Map<String, dynamic>>.from(decoded);
+
+      final filteredAlerts = loadedAlerts.where((alert) {
+        if (clearedAt == null) return true;
+
+        final createdAt = DateTime.tryParse(alert['created_at'] ?? '');
+
+        if (createdAt == null) return true;
+
+        return createdAt.isAfter(clearedAt!);
+      }).toList();
 
       setState(() {
-        alerts = List<Map<String, dynamic>>.from(history);
+        alerts = filteredAlerts;
+      });
+    } catch (e) {
+      print(e);
+    }
+  }
+
+  Future<void> saveAlerts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      await prefs.setString('alerts_history', jsonEncode(alerts));
+    } catch (e) {
+      print(e);
+    }
+  }
+
+  Future<void> clearAlerts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final now = DateTime.now();
+
+      await prefs.setString('alerts_cleared_at', now.toIso8601String());
+
+      await prefs.setString('alerts_history', jsonEncode([]));
+
+      setState(() {
+        alerts.clear();
+        clearedAt = now;
       });
     } catch (e) {
       print(e);
@@ -110,7 +147,17 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
           callback: (payload) async {
             final data = payload.newRecord;
 
+            final createdAt = DateTime.tryParse(data['created_at'] ?? '');
+
+            if (clearedAt != null &&
+                createdAt != null &&
+                createdAt.isBefore(clearedAt!)) {
+              return;
+            }
+
             alerts.insert(0, data);
+
+            await saveAlerts();
 
             setState(() {});
 
@@ -148,22 +195,88 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
     }
   }
 
-  void clearHistory() {
-    setState(() {
-      alerts.clear();
-    });
+  Future<void> logout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+
+          title: const Text(
+            'ВИЙТИ З СИСТЕМИ?',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+
+          content: const Text(
+            'Локальна історія оповіщень буде очищена з пристрою.\n\nДля повторного доступу знадобиться повторна авторизація.',
+            style: TextStyle(color: Colors.white70),
+          ),
+
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, false);
+              },
+              child: const Text(
+                'СКАСУВАТИ',
+                style: TextStyle(color: Colors.white54),
+              ),
+            ),
+
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, true);
+              },
+              child: const Text(
+                'ВИЙТИ',
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      await prefs.remove('alerts_history');
+
+      await prefs.remove('alerts_cleared_at');
+
+      await supabase.auth.signOut();
+
+      if (!mounted) return;
+
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const JoinServerScreen()),
+        (route) => false,
+      );
+    } catch (e) {
+      print(e);
+    }
   }
 
-  Future<void> logout() async {
-    await supabase.auth.signOut();
+  String formatTime(String? value) {
+    if (value == null) return '--:--';
 
-    if (!mounted) return;
+    try {
+      final date = DateTime.parse(value).toLocal();
 
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const StartScreen()),
-      (route) => false,
-    );
+      return DateFormat('HH:mm').format(date);
+    } catch (e) {
+      return '--:--';
+    }
   }
 
   @override
@@ -314,6 +427,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
                       'type': 'TEST',
                       'message': 'Тест локальної тривоги',
                       'created_by_name': 'LOCAL TEST',
+                      'created_at': DateTime.now().toIso8601String(),
                     });
                   },
 
@@ -342,7 +456,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
                 children: [
                   const Text(
-                    'ОСТАННІ ТРИВОГИ',
+                    'ІСТОРІЯ ОПОВІЩЕНЬ',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 20,
@@ -350,24 +464,17 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
                     ),
                   ),
 
-                  TextButton.icon(
-                    onPressed: clearHistory,
-
+                  IconButton(
+                    onPressed: clearAlerts,
                     icon: const Icon(
-                      Icons.delete_outline,
-                      color: Colors.white38,
-                      size: 18,
-                    ),
-
-                    label: const Text(
-                      'Очистити',
-                      style: TextStyle(color: Colors.white38, fontSize: 14),
+                      Icons.delete_outline_rounded,
+                      color: Colors.white54,
                     ),
                   ),
                 ],
               ),
 
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
 
               Expanded(
                 child: alerts.isEmpty
@@ -416,14 +523,29 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
                                         ),
                                       ),
 
-                                      const SizedBox(height: 4),
+                                      const SizedBox(height: 6),
 
-                                      Text(
-                                        alert['type'] ?? '',
+                                      Row(
+                                        children: [
+                                          Text(
+                                            alert['type'] ?? '',
 
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                        ),
+                                            style: const TextStyle(
+                                              color: Colors.white54,
+                                            ),
+                                          ),
+
+                                          const SizedBox(width: 12),
+
+                                          Text(
+                                            formatTime(alert['created_at']),
+
+                                            style: const TextStyle(
+                                              color: Colors.white38,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ],
                                   ),
@@ -433,111 +555,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
                           );
                         },
                       ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class AlertScreen extends StatelessWidget {
-  final Map<String, dynamic> alert;
-
-  final AssetsAudioPlayer player;
-
-  const AlertScreen({super.key, required this.alert, required this.player});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.red.shade900,
-
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-
-            children: [
-              const Icon(Icons.warning_rounded, color: Colors.white, size: 120),
-
-              const SizedBox(height: 40),
-
-              const Text(
-                'ТРИВОГА',
-                textAlign: TextAlign.center,
-
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 42,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              Text(
-                alert['message'] ?? 'ALERT',
-
-                textAlign: TextAlign.center,
-
-                style: const TextStyle(color: Colors.white, fontSize: 24),
-              ),
-
-              const SizedBox(height: 20),
-
-              Text(
-                'ТИП: ${alert['type'] ?? 'GENERAL'}',
-
-                style: const TextStyle(color: Colors.white70, fontSize: 18),
-              ),
-
-              const SizedBox(height: 12),
-
-              Text(
-                'ВІД: ${alert['created_by_name'] ?? 'ADMIN'}',
-
-                style: const TextStyle(color: Colors.white70, fontSize: 18),
-              ),
-
-              const SizedBox(height: 60),
-
-              SizedBox(
-                width: double.infinity,
-                height: 72,
-
-                child: ElevatedButton(
-                  onPressed: () async {
-                    await player.stop();
-
-                    Vibration.cancel();
-
-                    if (!context.mounted) return;
-
-                    Navigator.pop(context);
-                  },
-
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                  ),
-
-                  child: const Text(
-                    'ПІДТВЕРДИТИ ОТРИМАННЯ',
-
-                    style: TextStyle(
-                      color: Colors.black,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
               ),
             ],
           ),

@@ -47,6 +47,8 @@ class _UsersScreenState extends State<UsersScreen> {
       print(e);
     }
 
+    if (!mounted) return;
+
     setState(() {
       loading = false;
     });
@@ -71,6 +73,25 @@ class _UsersScreenState extends State<UsersScreen> {
     }
   }
 
+  IconData getRoleIcon(String role) {
+    switch (role) {
+      case 'admin':
+        return Icons.shield_rounded;
+
+      case 'leader':
+        return Icons.star_rounded;
+
+      case 'medic':
+        return Icons.medical_services_rounded;
+
+      case 'driver':
+        return Icons.directions_car_rounded;
+
+      default:
+        return Icons.person;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -79,6 +100,8 @@ class _UsersScreenState extends State<UsersScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF0F0F10),
         elevation: 0,
+
+        iconTheme: const IconThemeData(color: Colors.white),
 
         title: const Text(
           'КОРИСТУВАЧІ',
@@ -125,7 +148,10 @@ class _UsersScreenState extends State<UsersScreen> {
                           borderRadius: BorderRadius.circular(16),
                         ),
 
-                        child: Icon(Icons.person, color: getRoleColor(role)),
+                        child: Icon(
+                          getRoleIcon(role),
+                          color: getRoleColor(role),
+                        ),
                       ),
 
                       const SizedBox(width: 16),
