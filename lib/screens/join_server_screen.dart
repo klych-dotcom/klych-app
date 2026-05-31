@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'invite_join_screen.dart';
 import 'login_screen.dart';
+import 'start_screen.dart';
 
 class JoinServerScreen extends StatelessWidget {
   const JoinServerScreen({super.key});
@@ -28,7 +29,16 @@ class JoinServerScreen extends StatelessWidget {
 
                   child: IconButton(
                     onPressed: () {
-                      Navigator.pop(context);
+                      if (Navigator.canPop(context)) {
+                        Navigator.pop(context);
+                      } else {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const StartScreen(),
+                          ),
+                        );
+                      }
                     },
 
                     icon: const Icon(
@@ -50,7 +60,7 @@ class JoinServerScreen extends StatelessWidget {
                     borderRadius: BorderRadius.circular(28),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.red.withOpacity(0.25),
+                        color: Colors.red.withValues(alpha: 0.25),
                         blurRadius: 24,
                         spreadRadius: 2,
                       ),
@@ -177,7 +187,7 @@ class JoinServerScreen extends StatelessWidget {
                   'KLYCH Emergency System',
 
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.18),
+                    color: Colors.white.withValues(alpha: 0.18),
                     fontSize: 12,
                     letterSpacing: 1,
                   ),

@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
+import '../models/user_role.dart';
 import 'home_screen.dart';
+import 'start_screen.dart';
 
 class CreateServerScreen extends StatefulWidget {
   const CreateServerScreen({super.key});
@@ -94,8 +95,7 @@ class _CreateServerScreenState extends State<CreateServerScreen> {
         'organization_id': organization['id'],
         'name': 'ADMIN',
         'callsign': 'ADMIN',
-        'role': 'admin', // Колонка, яку ми знайшли
-        'permission': 'admin', // Колонка сумісності
+        ...UserRole.toDbFields(UserRole.admin),
       });
 
       if (!mounted) return;
@@ -137,7 +137,14 @@ class _CreateServerScreenState extends State<CreateServerScreen> {
               // Кнопка назад
               IconButton(
                 onPressed: () {
-                  Navigator.pop(context);
+                  if (Navigator.canPop(context)) {
+                    Navigator.pop(context);
+                  } else {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(builder: (_) => const StartScreen()),
+                    );
+                  }
                 },
                 icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
               ),
@@ -191,8 +198,8 @@ class _CreateServerScreenState extends State<CreateServerScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red.shade700,
                     foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.red.shade900.withOpacity(
-                      0.4,
+                    disabledBackgroundColor: Colors.red.shade900.withValues(
+                      alpha: 0.4,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(22),

@@ -8,6 +8,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
 import '../main.dart';
+import '../models/user_role.dart';
+import '../models/alert_constants.dart';
+import '../utils/alert_utils.dart';
+import '../utils/alert_delivery_tracker.dart';
 import 'alert_screen.dart';
 import 'join_server_screen.dart';
 
@@ -24,22 +28,27 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
   RealtimeChannel? channel;
 
   String callsign = 'MEMBER';
-  String role = 'member';
+  String role = UserRole.member;
   String organization = 'KLYCH';
+  String? organizationId;
 
-  bool connected = true;
+  bool connected = false;
 
   List<Map<String, dynamic>> alerts = [];
+
+  final AlertDeliveryTracker _deliveryTracker = AlertDeliveryTracker();
 
   DateTime? clearedAt;
 
   @override
   void initState() {
     super.initState();
+    _init();
+  }
 
-    loadUser();
-    loadLocalAlerts();
-
+  Future<void> _init() async {
+    await loadUser();
+    await loadLocalAlerts();
     subscribeAlerts();
   }
 
@@ -61,13 +70,16 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
           .eq('id', userData['organization_id'])
           .single();
 
+      if (!mounted) return;
+
       setState(() {
+        organizationId = userData['organization_id']?.toString();
         callsign = userData['callsign'] ?? 'MEMBER';
-        role = userData['role'] ?? 'member';
+        role = UserRole.resolve(userData);
         organization = org['name'] ?? 'KLYCH';
       });
     } catch (e) {
-      print(e);
+      debugPrint('$e');
     }
   }
 
@@ -102,8 +114,9 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
       setState(() {
         alerts = filteredAlerts;
       });
+      _deliveryTracker.seedFromHistory(alerts);
     } catch (e) {
-      print(e);
+      debugPrint('$e');
     }
   }
 
@@ -113,7 +126,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
       await prefs.setString('alerts_history', jsonEncode(alerts));
     } catch (e) {
-      print(e);
+      debugPrint('$e');
     }
   }
 
@@ -132,42 +145,83 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
         clearedAt = now;
       });
     } catch (e) {
-      print(e);
+      debugPrint('$e');
     }
   }
 
   void subscribeAlerts() {
-    channel = supabase.channel('alerts-channel');
+    if (organizationId == null) return;
+
+    channel?.unsubscribe();
+
+    final orgId = organizationId!;
+
+    channel = supabase.channel('member-alerts-$orgId');
 
     channel!
         .onPostgresChanges(
           event: PostgresChangeEvent.insert,
           schema: 'public',
           table: 'alerts',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'organization_id',
+            value: orgId,
+          ),
           callback: (payload) async {
-            final data = payload.newRecord;
-
-            final createdAt = DateTime.tryParse(data['created_at'] ?? '');
-
-            if (clearedAt != null &&
-                createdAt != null &&
-                createdAt.isBefore(clearedAt!)) {
-              return;
-            }
-
-            alerts.insert(0, data);
-
-            await saveAlerts();
-
-            setState(() {});
-
-            await triggerAlarm(data);
+            await _handleIncomingAlert(payload.newRecord, orgId);
           },
         )
-        .subscribe();
+        .subscribe((status, [error]) {
+          if (!mounted) return;
+          setState(() {
+            connected = status == RealtimeSubscribeStatus.subscribed;
+          });
+        });
   }
 
-  Future<void> triggerAlarm(Map<String, dynamic> alert) async {
+  Future<void> _handleIncomingAlert(
+    Map<String, dynamic> data,
+    String orgId,
+  ) async {
+    if (!_deliveryTracker.tryMarkProcessed(data)) return;
+    if (!AlertUtils.shouldReceiveAlert(data, orgId)) return;
+
+    final createdAt = DateTime.tryParse(data['created_at'] ?? '');
+
+    if (clearedAt != null &&
+        createdAt != null &&
+        createdAt.isBefore(clearedAt!)) {
+      return;
+    }
+
+    alerts.insert(0, data);
+    await saveAlerts();
+
+    if (!mounted) return;
+    setState(() {});
+
+    final authUserId = supabase.auth.currentUser?.id;
+    if (AlertDeliveryTracker.isOwnAlert(data, authUserId)) return;
+
+    if (AlertUtils.isRedAlert(data['type']?.toString())) {
+      await triggerRedAlert(data);
+    } else {
+      showGreenNotification(data);
+    }
+  }
+
+  void showGreenNotification(Map<String, dynamic> alert) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: Colors.green.shade900,
+        content: Text(alert['message']?.toString() ?? 'Інформаційне повідомлення'),
+      ),
+    );
+  }
+
+  Future<void> triggerRedAlert(Map<String, dynamic> alert) async {
     try {
       await player.open(
         Audio("assets/alarm.mp3"),
@@ -175,7 +229,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
         loopMode: LoopMode.single,
       );
 
-      final hasVibrator = await Vibration.hasVibrator() ?? false;
+      final hasVibrator = await Vibration.hasVibrator();
 
       if (hasVibrator) {
         Vibration.vibrate(pattern: [0, 1000, 500, 1000], repeat: 0);
@@ -191,7 +245,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
         ),
       );
     } catch (e) {
-      print(e);
+      debugPrint('$e');
     }
   }
 
@@ -263,7 +317,19 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
         (route) => false,
       );
     } catch (e) {
-      print(e);
+      debugPrint('$e');
+    }
+  }
+
+  String formatDate(String? value) {
+    if (value == null) return '--.--.----';
+
+    try {
+      final date = DateTime.parse(value).toLocal();
+
+      return DateFormat('dd.MM.yyyy').format(date);
+    } catch (e) {
+      return '--.--.----';
     }
   }
 
@@ -423,8 +489,8 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
                 child: ElevatedButton.icon(
                   onPressed: () async {
-                    await triggerAlarm({
-                      'type': 'TEST',
+                    await triggerRedAlert({
+                      'type': AlertLevel.red,
                       'message': 'Тест локальної тривоги',
                       'created_by_name': 'LOCAL TEST',
                       'created_at': DateTime.now().toIso8601String(),
@@ -489,6 +555,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
                         itemBuilder: (_, index) {
                           final alert = alerts[index];
+                          final level = AlertUtils.levelLabel(
+                            alert['type']?.toString(),
+                          );
+                          final isGreen = level == AlertLevel.green;
 
                           return Container(
                             margin: const EdgeInsets.only(bottom: 14),
@@ -501,9 +571,11 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
                             child: Row(
                               children: [
-                                const Icon(
-                                  Icons.warning_amber_rounded,
-                                  color: Colors.red,
+                                Icon(
+                                  isGreen
+                                      ? Icons.info_outline_rounded
+                                      : Icons.warning_amber_rounded,
+                                  color: isGreen ? Colors.green : Colors.red,
                                 ),
 
                                 const SizedBox(width: 14),
@@ -525,27 +597,15 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
                                       const SizedBox(height: 6),
 
-                                      Row(
-                                        children: [
-                                          Text(
-                                            alert['type'] ?? '',
+                                      Text(
+                                        '$level · ${formatDate(alert['created_at'])} · ${formatTime(alert['created_at'])}',
 
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                            ),
-                                          ),
-
-                                          const SizedBox(width: 12),
-
-                                          Text(
-                                            formatTime(alert['created_at']),
-
-                                            style: const TextStyle(
-                                              color: Colors.white38,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
+                                        style: TextStyle(
+                                          color: isGreen
+                                              ? Colors.green.shade400
+                                              : Colors.white54,
+                                          fontSize: 12,
+                                        ),
                                       ),
                                     ],
                                   ),

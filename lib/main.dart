@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'screens/home_screen.dart';
-import 'screens/member_home_screen.dart';
+import 'models/user_role.dart';
+import 'navigation/role_navigation.dart';
 import 'screens/start_screen.dart';
 
 // Глобальний клієнт Supabase для всього додатка
@@ -56,26 +56,17 @@ class _AlertAppState extends State<AlertApp> {
         return const StartScreen();
       }
 
-      // Запит до твоєї таблиці public.users за реальними колонками:
-      // Вибираємо тільки 'permission' для оптимізації трафіку
       final userData = await supabase
           .from('users')
-          .select('permission')
-          .eq('auth_id', user.id) // Шукаємо відповідність користувача Auth
+          .select('role, permission')
+          .eq('auth_id', user.id)
           .single();
 
-      final permission = userData['permission']?.toString().toLowerCase();
-
-      // Перевірка ролі за полем permission з твоєї БД
-      if (permission == 'admin') {
-        return const HomeScreen(); // Екран для адміна (надсилання тривог)
-      }
-
-      // Для всіх інших ролей (member, medic, driver) -> Екран учасника
-      return const MemberHomeScreen();
+      final role = UserRole.resolve(userData);
+      return homeScreenForRole(role);
     } catch (e) {
       // У разі помилки (наприклад, збій мережі чи відсутність запису в users)
-      print('Помилка авторизації в main.dart: $e');
+      debugPrint('Помилка авторизації в main.dart: $e');
       return const StartScreen();
     }
   }

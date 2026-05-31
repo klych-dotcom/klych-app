@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
-import 'member_home_screen.dart';
+import '../models/user_role.dart';
+import '../navigation/role_navigation.dart';
+import 'join_server_screen.dart';
 
 class InviteJoinScreen extends StatefulWidget {
   const InviteJoinScreen({super.key});
@@ -16,9 +17,9 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
   final callsignController = TextEditingController();
   final passwordController = TextEditingController();
 
-  String selectedRole =
-      'member'; // Змінив назву змінної, щоб не плутати з колонками
+  String selectedCategory = UserRole.member;
   bool loading = false;
+  bool isLeaderInvite = false;
 
   @override
   void dispose() {
@@ -48,6 +49,32 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
         borderSide: BorderSide.none,
       ),
     );
+  }
+
+  Future<void> _checkInviteType() async {
+    final code = inviteController.text.trim();
+    if (code.isEmpty) {
+      setState(() => isLeaderInvite = false);
+      return;
+    }
+
+    try {
+      final invite = await supabase
+          .from('invites')
+          .select('permission')
+          .eq('code', code)
+          .maybeSingle();
+
+      if (!mounted) return;
+
+      setState(() {
+        isLeaderInvite =
+            (invite?['permission'] ?? '').toString().toLowerCase() ==
+            UserRole.leader;
+      });
+    } catch (_) {
+      if (mounted) setState(() => isLeaderInvite = false);
+    }
   }
 
   Future<void> join() async {
@@ -82,6 +109,16 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
         throw Exception('Код запрошення не знайдено або застарів');
       }
 
+      final invitePermission =
+          (invite['permission'] ?? UserRole.member).toString().toLowerCase();
+
+      final String assignedRole;
+      if (invitePermission == UserRole.leader) {
+        assignedRole = UserRole.leader;
+      } else {
+        assignedRole = selectedCategory;
+      }
+
       // Твій крутий лайфхак з фейковим емейлом для простоти входу
       final fakeEmail = '${DateTime.now().millisecondsSinceEpoch}@klych.local';
 
@@ -97,24 +134,16 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
       }
 
       // 4. Запис профілю у твою таблицю public.users
-      // повернули поле 'role'
       await supabase.from('users').insert({
         'auth_id': user.id,
         'callsign': callsign,
-        'role': selectedRole,
-        'permission': selectedRole,
+        ...UserRole.toDbFields(assignedRole),
         'organization_id': invite['organization_id'],
-        // 'name': callsign, // Якщо захочеш дублювати позивний в поле name, розкоментуй цей рядок
       });
 
       if (!mounted) return;
 
-      // 5. Успішний перехід на головний екран бійця
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
-        (route) => false,
-      );
+      navigateToRoleHome(context, assignedRole);
     } catch (e) {
       if (!mounted) return;
       _showSnackBar(e.toString().replaceAll('Exception: ', ''));
@@ -145,7 +174,16 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
             children: [
               IconButton(
                 onPressed: () {
-                  Navigator.pop(context);
+                  if (Navigator.canPop(context)) {
+                    Navigator.pop(context);
+                  } else {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const JoinServerScreen(),
+                      ),
+                    );
+                  }
                 },
                 icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
               ),
@@ -164,6 +202,7 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
                 controller: inviteController,
                 style: const TextStyle(color: Colors.white),
                 decoration: inputStyle('Код-запрошення'),
+                onEditingComplete: _checkInviteType,
               ),
               const SizedBox(height: 18),
 
@@ -180,52 +219,64 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
                 style: const TextStyle(color: Colors.white),
                 decoration: inputStyle('Пароль'),
               ),
-              const SizedBox(height: 18),
-
-              // Вибір ролі (permission)
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1A1A1C),
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: selectedRole,
-                    dropdownColor: const Color(0xFF1A1A1C),
-                    isExpanded: true,
-                    icon: const Icon(
-                      Icons.keyboard_arrow_down,
-                      color: Colors.white54,
-                    ),
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'member',
-                        child: Text('Учасник (Member)'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'driver',
-                        child: Text('Водій (Driver)'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'medic',
-                        child: Text('Медик (Medic)'),
-                      ),
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          selectedRole = value;
-                        });
-                      }
-                    },
+              if (isLeaderInvite) ...[
+                const SizedBox(height: 18),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A1A1C),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Text(
+                    'Код командира — реєстрація як ${UserRole.leader.toUpperCase()}',
+                    style: TextStyle(color: Colors.orange.shade400),
                   ),
                 ),
-              ),
+              ] else ...[
+                const SizedBox(height: 18),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A1A1C),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: selectedCategory,
+                      dropdownColor: const Color(0xFF1A1A1C),
+                      isExpanded: true,
+                      icon: const Icon(
+                        Icons.keyboard_arrow_down,
+                        color: Colors.white54,
+                      ),
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      items: const [
+                        DropdownMenuItem(
+                          value: UserRole.member,
+                          child: Text('Учасник (Other)'),
+                        ),
+                        DropdownMenuItem(
+                          value: UserRole.driver,
+                          child: Text('Водій (Driver)'),
+                        ),
+                        DropdownMenuItem(
+                          value: UserRole.medic,
+                          child: Text('Медик (Medic)'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() => selectedCategory = value);
+                        }
+                      },
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 34),
 
               SizedBox(
@@ -236,8 +287,8 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red.shade700,
                     foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.red.shade900.withOpacity(
-                      0.4,
+                    disabledBackgroundColor: Colors.red.shade900.withValues(
+                      alpha: 0.4,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(22),

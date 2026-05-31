@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
+import '../models/user_role.dart';
 
 class UsersScreen extends StatefulWidget {
   const UsersScreen({super.key});
@@ -44,7 +44,7 @@ class _UsersScreenState extends State<UsersScreen> {
 
       users = List<Map<String, dynamic>>.from(response);
     } catch (e) {
-      print(e);
+      debugPrint('$e');
     }
 
     if (!mounted) return;
@@ -126,7 +126,7 @@ class _UsersScreenState extends State<UsersScreen> {
               itemBuilder: (_, index) {
                 final user = users[index];
 
-                final role = user['role'] ?? 'member';
+                final role = UserRole.resolve(user);
 
                 return Container(
                   margin: const EdgeInsets.only(bottom: 14),
@@ -144,7 +144,7 @@ class _UsersScreenState extends State<UsersScreen> {
                         height: 52,
 
                         decoration: BoxDecoration(
-                          color: getRoleColor(role).withOpacity(0.15),
+                          color: getRoleColor(role).withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(16),
                         ),
 

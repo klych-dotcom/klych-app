@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
-import 'home_screen.dart';
-import 'member_home_screen.dart'; // Додано імпорт екрана бійця
+import '../models/user_role.dart';
+import '../navigation/role_navigation.dart';
+import 'join_server_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -47,31 +48,15 @@ class _LoginScreenState extends State<LoginScreen> {
       final user = res.user;
       if (user == null) throw Exception('Користувача не знайдено');
 
-      // Перевірка ролі користувача у твоїй таблиці public.users
       final userData = await supabase
           .from('users')
-          .select('permission')
+          .select('role, permission')
           .eq('auth_id', user.id)
           .single();
 
-      final permission = userData['permission']?.toString().toLowerCase();
-
       if (!mounted) return;
 
-      // Розумна навігація на основі поля permission з твоєї БД
-      if (permission == 'admin') {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-          (route) => false,
-        );
-      } else {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
-          (route) => false,
-        );
-      }
+      navigateToRoleHome(context, UserRole.resolve(userData));
     } catch (e) {
       if (!mounted) return;
       // Гарне виведення помилки (наприклад, якщо неправильний пароль)
@@ -118,7 +103,16 @@ class _LoginScreenState extends State<LoginScreen> {
                 alignment: Alignment.centerLeft,
                 child: IconButton(
                   onPressed: () {
-                    Navigator.pop(context);
+                    if (Navigator.canPop(context)) {
+                      Navigator.pop(context);
+                    } else {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const JoinServerScreen(),
+                        ),
+                      );
+                    }
                   },
                   icon: const Icon(
                     Icons.arrow_back_ios_new,
@@ -159,8 +153,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red.shade700,
                     foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.red.shade900.withOpacity(
-                      0.5,
+                    disabledBackgroundColor: Colors.red.shade900.withValues(
+                      alpha: 0.5,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20),

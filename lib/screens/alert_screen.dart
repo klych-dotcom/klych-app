@@ -62,7 +62,7 @@ class AlertScreen extends StatelessWidget {
               const SizedBox(height: 18),
 
               Text(
-                'TYPE: ${alert['type'] ?? 'GENERAL'}',
+                'TYPE: ${alert['type'] ?? 'RED'}',
 
                 style: const TextStyle(
                   color: Colors.white70,

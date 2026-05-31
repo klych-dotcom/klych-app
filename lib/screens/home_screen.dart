@@ -2,11 +2,13 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:assets_audio_player/assets_audio_player.dart';
 import 'package:vibration/vibration.dart';
 
 import '../main.dart';
+import '../models/alert_constants.dart';
+import '../models/user_role.dart';
+import '../services/alert_service.dart';
 import 'start_screen.dart';
 import 'users_screen.dart';
 
@@ -19,11 +21,13 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   String organizationName = 'KLYCH SERVER';
-  String inviteCode = '------';
+  String memberInviteCode = '------';
+  String leaderInviteCode = '------';
   String? organizationId;
 
   bool loading = true;
-  bool regeneratingCode = false;
+  bool regeneratingMemberCode = false;
+  bool regeneratingLeaderCode = false;
 
   final AssetsAudioPlayer player = AssetsAudioPlayer();
   final TextEditingController alertMessageController = TextEditingController();
@@ -73,34 +77,8 @@ class _HomeScreenState extends State<HomeScreen> {
         organizationName = organization['name'];
       });
 
-      // INVITE
-      final invite = await supabase
-          .from('invites')
-          .select('code')
-          .eq('organization_id', organizationId!)
-          .maybeSingle();
-
-      if (!mounted) return;
-
-      if (invite != null) {
-        setState(() {
-          inviteCode = invite['code'];
-        });
-      } else {
-        final random = Random();
-
-        final generatedCode = (100000 + random.nextInt(900000)).toString();
-
-        await supabase.from('invites').insert({
-          'organization_id': organizationId,
-          'code': generatedCode,
-          'permission': 'member',
-        });
-
-        setState(() {
-          inviteCode = generatedCode;
-        });
-      }
+      // INVITES (member + leader)
+      await _loadInvites();
     } catch (e) {
       _showErrorSnackBar('Помилка завантаження даних: $e');
     } finally {
@@ -112,43 +90,116 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> regenerateInviteCode() async {
+  Future<String> _createInvite(String permission) async {
+    final random = Random();
+    final code = (100000 + random.nextInt(900000)).toString();
+
+    await supabase.from('invites').insert({
+      'organization_id': organizationId,
+      'code': code,
+      'permission': permission,
+    });
+
+    return code;
+  }
+
+  Future<void> _loadInvites() async {
     if (organizationId == null) return;
+
+    final rows = await supabase
+        .from('invites')
+        .select()
+        .eq('organization_id', organizationId!);
+
+    String? memberCode;
+    String? leaderCode;
+
+    for (final row in rows) {
+      final permission =
+          (row['permission'] ?? UserRole.member).toString().toLowerCase();
+      if (permission == UserRole.leader) {
+        leaderCode = row['code']?.toString();
+      } else {
+        memberCode ??= row['code']?.toString();
+      }
+    }
+
+    memberCode ??= await _createInvite(UserRole.member);
+    leaderCode ??= await _createInvite(UserRole.leader);
+
+    if (!mounted) return;
+
+    setState(() {
+      memberInviteCode = memberCode!;
+      leaderInviteCode = leaderCode!;
+    });
+  }
+
+  Future<void> regenerateInviteCode(String permission) async {
+    if (organizationId == null) return;
+
+    final isLeader = permission == UserRole.leader;
 
     try {
       setState(() {
-        regeneratingCode = true;
+        if (isLeader) {
+          regeneratingLeaderCode = true;
+        } else {
+          regeneratingMemberCode = true;
+        }
       });
 
       final random = Random();
-
       final newCode = (100000 + random.nextInt(900000)).toString();
 
       await supabase
           .from('invites')
           .update({'code': newCode})
-          .eq('organization_id', organizationId!);
+          .eq('organization_id', organizationId!)
+          .eq('permission', permission);
 
       await Future.delayed(const Duration(milliseconds: 500));
 
       if (!mounted) return;
 
       setState(() {
-        inviteCode = newCode;
+        if (isLeader) {
+          leaderInviteCode = newCode;
+        } else {
+          memberInviteCode = newCode;
+        }
       });
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Код-запрошення оновлено')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isLeader
+                ? 'Код командира оновлено'
+                : 'Код учасника оновлено',
+          ),
+        ),
+      );
     } catch (e) {
       _showErrorSnackBar('Не вдалося оновити код: $e');
     } finally {
       if (mounted) {
         setState(() {
-          regeneratingCode = false;
+          if (isLeader) {
+            regeneratingLeaderCode = false;
+          } else {
+            regeneratingMemberCode = false;
+          }
         });
       }
     }
+  }
+
+  Future<void> _copyCode(String code) async {
+    await Clipboard.setData(ClipboardData(text: code));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Код скопійовано')),
+    );
   }
 
   Future<void> logout() async {
@@ -180,17 +231,17 @@ class _HomeScreenState extends State<HomeScreen> {
       final messageText = alertMessageController.text.trim();
 
       final alertMessage = messageText.isEmpty
-          ? '🚨 ТЕСТОВА ТРИВОГА'
+          ? AlertService.defaultMessage(AlertLevel.red)
           : messageText;
 
-      // SAVE ALERT
-      await supabase.from('alerts').insert({
-        'organization_id': organizationId,
-        'message': alertMessage,
-        'type': 'GENERAL',
-        'created_by': user.id,
-        'created_by_name': 'ADMIN',
-      });
+      await AlertService.createAlert(
+        organizationId: organizationId!,
+        message: alertMessage,
+        level: AlertLevel.red,
+        target: AlertTarget.organization,
+        createdByAuthId: user.id,
+        createdByName: 'ADMIN',
+      );
 
       // AUDIO
       await player.open(
@@ -200,7 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       // VIBRATION
-      final hasVibrator = await Vibration.hasVibrator() ?? false;
+      final hasVibrator = await Vibration.hasVibrator();
 
       if (hasVibrator) {
         Vibration.vibrate(
@@ -284,6 +335,64 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _inviteCard({
+    required String title,
+    required String code,
+    required bool regenerating,
+    required VoidCallback onCopy,
+    required VoidCallback onRefresh,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1C),
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white38,
+              letterSpacing: 2,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: SelectableText(
+                  code,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 3,
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: onCopy,
+                icon: const Icon(Icons.copy_rounded, color: Colors.white54),
+              ),
+              AnimatedRotation(
+                turns: regenerating ? 0.5 : 0,
+                duration: const Duration(milliseconds: 500),
+                child: IconButton(
+                  onPressed: regenerating ? null : onRefresh,
+                  icon: const Icon(Icons.refresh_rounded, color: Colors.white54),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -361,115 +470,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
                       const SizedBox(height: 36),
 
-                      // INVITE CARD
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(24),
-
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1A1A1C),
-                          borderRadius: BorderRadius.circular(28),
-                        ),
-
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-
-                          children: [
-                            const Row(
-                              children: [
-                                CircleAvatar(
-                                  radius: 5,
-                                  backgroundColor: Colors.green,
-                                ),
-
-                                SizedBox(width: 10),
-
-                                Text(
-                                  'SYSTEM ACTIVE',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    letterSpacing: 1.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 26),
-
-                            const Text(
-                              'INVITE CODE',
-                              style: TextStyle(
-                                color: Colors.white38,
-                                letterSpacing: 2,
-                              ),
-                            ),
-
-                            const SizedBox(height: 12),
-
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: SelectableText(
-                                    inviteCode,
-
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 4,
-                                    ),
-                                  ),
-                                ),
-
-                                const SizedBox(width: 10),
-
-                                // COPY
-                                IconButton(
-                                  onPressed: () async {
-                                    await Clipboard.setData(
-                                      ClipboardData(text: inviteCode),
-                                    );
-
-                                    if (!mounted) return;
-
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Код скопійовано'),
-                                      ),
-                                    );
-                                  },
-
-                                  icon: const Icon(
-                                    Icons.copy_rounded,
-                                    color: Colors.white54,
-                                  ),
-                                ),
-
-                                // REFRESH
-                                AnimatedRotation(
-                                  turns: regeneratingCode ? 0.5 : 0,
-
-                                  duration: const Duration(milliseconds: 500),
-
-                                  child: IconButton(
-                                    onPressed: regeneratingCode
-                                        ? null
-                                        : regenerateInviteCode,
-
-                                    icon: const Icon(
-                                      Icons.refresh_rounded,
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
+                      _inviteCard(
+                        title: 'КОД УЧАСНИКА',
+                        code: memberInviteCode,
+                        regenerating: regeneratingMemberCode,
+                        onCopy: () => _copyCode(memberInviteCode),
+                        onRefresh: () =>
+                            regenerateInviteCode(UserRole.member),
                       ),
 
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 16),
+
+                      _inviteCard(
+                        title: 'КОД КОМАНДИРА',
+                        code: leaderInviteCode,
+                        regenerating: regeneratingLeaderCode,
+                        onCopy: () => _copyCode(leaderInviteCode),
+                        onRefresh: () =>
+                            regenerateInviteCode(UserRole.leader),
+                      ),
+
+                      const SizedBox(height: 24),
 
                       // ALERT MESSAGE
                       TextField(
@@ -588,7 +609,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           'KLYCH Emergency System',
 
                           style: TextStyle(
-                            color: Colors.white.withOpacity(0.22),
+                            color: Colors.white.withValues(alpha: 0.22),
                             fontSize: 12,
                           ),
                         ),
