@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/user_role.dart';
 import 'navigation/role_navigation.dart';
+import 'theme/klych_theme.dart';
 import 'screens/start_screen.dart';
 
 // Глобальний клієнт Supabase для всього додатка
@@ -14,8 +15,8 @@ Future<void> main() async {
 
   // Ініціалізація Supabase
   await Supabase.initialize(
-    url: 'https://cuoltgakafetqypsvasl.supabase.co',
-    anonKey: 'sb_publishable_83R191bduf1U7tDPNqkF9g_cgZb0Z7i',
+    url: 'https://wvaqqlitzzlaelkvmnyi.supabase.co',
+    anonKey: 'sb_publishable_nCbSA8vx9QXVJWUPAvcBBQ_DO0NIBto',
   );
 
   // Блокування горизонтального режиму (тільки портретна орієнтація)
@@ -58,11 +59,11 @@ class _AlertAppState extends State<AlertApp> {
 
       final userData = await supabase
           .from('users')
-          .select('role, permission')
+          .select('role')
           .eq('auth_id', user.id)
           .single();
 
-      final role = UserRole.resolve(userData);
+      final role = UserRole.authorizationRole(userData);
       return homeScreenForRole(role);
     } catch (e) {
       // У разі помилки (наприклад, збій мережі чи відсутність запису в users)
@@ -77,21 +78,16 @@ class _AlertAppState extends State<AlertApp> {
       debugShowCheckedModeBanner: false,
       title: 'KLYCH',
 
-      // Фірмова темна тема для системи оповіщення
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0F0F10),
-        fontFamily: 'SF Pro Display',
-      ),
+      theme: KlychTheme.build(),
 
       home: FutureBuilder<Widget>(
         future: _initialScreenFuture,
         builder: (context, snapshot) {
           // Поки йде перевірка сесії та запит до Supabase — показуємо лоадер
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              backgroundColor: Color(0xFF0F0F10),
-              body: Center(child: CircularProgressIndicator(color: Colors.red)),
+            return Scaffold(
+              backgroundColor: KlychTheme.background,
+              body: Center(child: CircularProgressIndicator(color: KlychTheme.accent)),
             );
           }
 

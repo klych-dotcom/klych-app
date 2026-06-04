@@ -9,12 +9,12 @@ class AlertDeliveryTracker {
       return id.toString();
     }
 
-    final createdBy = alert['created_by']?.toString();
+    final senderId = alert['sender_user_id']?.toString();
     final createdAt = alert['created_at']?.toString();
     final message = alert['message']?.toString();
 
-    if (createdBy != null && createdAt != null && message != null) {
-      return '$createdBy|$createdAt|$message';
+    if (senderId != null && createdAt != null && message != null) {
+      return '$senderId|$createdAt|$message';
     }
 
     return null;
@@ -27,10 +27,10 @@ class AlertDeliveryTracker {
     return _processedIds.add(key);
   }
 
-  /// Whether the current auth user sent this alert.
-  static bool isOwnAlert(Map<String, dynamic> alert, String? authUserId) {
-    if (authUserId == null || authUserId.isEmpty) return false;
-    return alert['created_by']?.toString() == authUserId;
+  /// Whether the current user ([users.id]) sent this alert.
+  static bool isOwnAlert(Map<String, dynamic> alert, String? currentUserId) {
+    if (currentUserId == null || currentUserId.isEmpty) return false;
+    return alert['sender_user_id']?.toString() == currentUserId;
   }
 
   /// Pre-register ids loaded from local history so restarts do not re-notify.

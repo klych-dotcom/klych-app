@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../utils/auth_error_messages.dart';
 import '../models/user_role.dart';
+import '../models/user_status.dart';
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
 import 'home_screen.dart';
 import 'start_screen.dart';
 
@@ -88,14 +92,27 @@ class _CreateServerScreenState extends State<CreateServerScreen> {
           .select()
           .single();
 
-      // 4. Запис профілю адміна у таблицю public.users
-      // Записуємо значення в ОБИДВІ колонки (role та permission) для повної сумісності
+      final orgId = organization['id'].toString();
+
+      await supabase.rpc(
+        'seed_org_departments',
+        params: {'p_org_id': orgId},
+      );
+
+      final hq = await supabase
+          .from('departments')
+          .select('id')
+          .eq('organization_id', orgId)
+          .eq('name', 'Headquarters')
+          .maybeSingle();
+
       await supabase.from('users').insert({
         'auth_id': user.id,
         'organization_id': organization['id'],
-        'name': 'ADMIN',
         'callsign': 'ADMIN',
         ...UserRole.toDbFields(UserRole.admin),
+        'department_id': hq?['id'],
+        'status': UserStatus.available,
       });
 
       if (!mounted) return;
@@ -108,7 +125,7 @@ class _CreateServerScreenState extends State<CreateServerScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      _showSnackBar(e.toString().replaceAll('Exception: ', ''));
+      _showSnackBar(AuthErrorMessages.from(e));
 
       if (mounted) {
         setState(() {
@@ -190,38 +207,12 @@ class _CreateServerScreenState extends State<CreateServerScreen> {
               const SizedBox(height: 34),
 
               // Кнопка відправки запиту
-              SizedBox(
-                width: double.infinity,
-                height: 66,
-                child: ElevatedButton(
-                  onPressed: loading ? null : register,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade700,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.red.shade900.withValues(
-                      alpha: 0.4,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                  ),
-                  child: loading
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2.5,
-                          ),
-                        )
-                      : const Text(
-                          'СТВОРИТИ',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                ),
+              KlychPrimaryButton(
+                label: 'СТВОРИТИ',
+                icon: Icons.add_circle_outline,
+                loading: loading,
+                onPressed: loading ? null : register,
+                color: KlychTheme.alertRed,
               ),
             ],
           ),

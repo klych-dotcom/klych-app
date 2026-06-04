@@ -1,35 +1,42 @@
-/// Role helpers — [role] is primary; [permission] kept for backward compatibility.
+/// Authorization roles only — admin, leader, member.
+/// Legacy values (medic, driver) map to [member] for routing.
 class UserRole {
   static const admin = 'admin';
   static const leader = 'leader';
   static const member = 'member';
+
+  /// Legacy category values stored before department model.
   static const medic = 'medic';
   static const driver = 'driver';
 
-  /// Reads role from a users row, preferring [role] over [permission].
-  static String resolve(Map<String, dynamic> userData) {
+  static const authorizationRoles = [admin, leader, member];
+
+  /// Raw role from DB.
+  static String resolveRaw(Map<String, dynamic> userData) {
     final role = userData['role']?.toString().trim().toLowerCase();
     if (role != null && role.isNotEmpty) return role;
-
-    final permission = userData['permission']?.toString().trim().toLowerCase();
-    if (permission != null && permission.isNotEmpty) return permission;
-
     return member;
   }
 
-  /// DB payload with both columns in sync (temporary dual-write).
-  static Map<String, String> toDbFields(String role) {
-    final normalized = role.trim().toLowerCase();
-    return {'role': normalized, 'permission': normalized};
+  /// Authorization role used for routing and permissions.
+  static String authorizationRole(Map<String, dynamic> userData) {
+    final raw = resolveRaw(userData);
+    if (raw == admin || raw == leader) return raw;
+    return member;
   }
 
-  static bool isAdmin(String role) => role.toLowerCase() == admin;
+  static Map<String, String> toDbFields(String role) {
+    final normalized = authorizationRole({'role': role});
+    return {'role': normalized};
+  }
 
-  static bool isLeader(String role) => role.toLowerCase() == leader;
+  static bool isAdmin(String role) => authorizationRole({'role': role}) == admin;
 
-  /// Admin and leader use dedicated shells; medic/driver/member share member UI.
-  static bool usesMemberHome(String role) {
-    final r = role.toLowerCase();
-    return !isAdmin(r) && !isLeader(r);
+  static bool isLeader(String role) =>
+      authorizationRole({'role': role}) == leader;
+
+  static bool usesMemberHome(Map<String, dynamic> userData) {
+    final auth = authorizationRole(userData);
+    return auth != admin && auth != leader;
   }
 }

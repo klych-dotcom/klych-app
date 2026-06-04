@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
+import '../utils/auth_error_messages.dart';
 import '../models/user_role.dart';
 import '../navigation/role_navigation.dart';
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
 import 'join_server_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -50,17 +53,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final userData = await supabase
           .from('users')
-          .select('role, permission')
+          .select('role')
           .eq('auth_id', user.id)
           .single();
 
       if (!mounted) return;
 
-      navigateToRoleHome(context, UserRole.resolve(userData));
+      navigateToRoleHome(context, UserRole.authorizationRole(userData));
     } catch (e) {
       if (!mounted) return;
       // Гарне виведення помилки (наприклад, якщо неправильний пароль)
-      _showSnackBar('Помилка входу: ${e.toString()}');
+      _showSnackBar(AuthErrorMessages.from(e));
 
       if (mounted) {
         setState(() {
@@ -145,38 +148,12 @@ class _LoginScreenState extends State<LoginScreen> {
                 decoration: field('Пароль'),
               ),
               const SizedBox(height: 34),
-              SizedBox(
-                width: double.infinity,
-                height: 64,
-                child: ElevatedButton(
-                  onPressed: loading ? null : login,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade700,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.red.shade900.withValues(
-                      alpha: 0.5,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                  ),
-                  child: loading
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2.5,
-                          ),
-                        )
-                      : const Text(
-                          'УВІЙТИ',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                ),
+              KlychPrimaryButton(
+                label: 'УВІЙТИ',
+                icon: Icons.login,
+                loading: loading,
+                onPressed: loading ? null : login,
+                color: KlychTheme.alertRed,
               ),
               const Spacer(),
             ],

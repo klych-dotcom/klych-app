@@ -3,8 +3,8 @@ class AlertLevel {
   static const green = 'GREEN';
 
   static const labels = {
-    red: 'ЧЕРВОНА (ТРИВОГА)',
-    green: 'ЗЕЛЕНА (ІНФО)',
+    red: 'Alert',
+    green: 'Info',
   };
 }
 

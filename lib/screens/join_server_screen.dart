@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
 import 'invite_join_screen.dart';
 import 'login_screen.dart';
 import 'start_screen.dart';
@@ -105,40 +107,16 @@ class JoinServerScreen extends StatelessWidget {
                 const SizedBox(height: 56),
 
                 // LOGIN BUTTON
-                SizedBox(
-                  width: double.infinity,
-                  height: 64,
-
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const LoginScreen()),
-                      );
-                    },
-
-                    icon: const Icon(Icons.shield_rounded, color: Colors.white),
-
-                    label: const Text(
-                      'УВІЙТИ В АКАУНТ',
-
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red.shade700,
-
-                      elevation: 0,
-
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(22),
-                      ),
-                    ),
-                  ),
+                KlychPrimaryButton(
+                  label: 'УВІЙТИ В АКАУНТ',
+                  icon: Icons.shield_rounded,
+                  color: KlychTheme.alertRed,
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const LoginScreen()),
+                    );
+                  },
                 ),
 
                 const SizedBox(height: 18),

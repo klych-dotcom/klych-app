@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../utils/auth_error_messages.dart';
 import '../models/user_role.dart';
+import '../models/user_status.dart';
 import '../navigation/role_navigation.dart';
+import '../services/department_service.dart';
+import '../utils/department_labels.dart';
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
 import 'join_server_screen.dart';
 
 class InviteJoinScreen extends StatefulWidget {
@@ -17,16 +23,28 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
   final callsignController = TextEditingController();
   final passwordController = TextEditingController();
 
-  String selectedCategory = UserRole.member;
+  String? selectedDepartmentId;
+  List<Map<String, dynamic>> departments = [];
   bool loading = false;
   bool isLeaderInvite = false;
 
   @override
+  void initState() {
+    super.initState();
+    inviteController.addListener(_onInviteCodeChanged);
+  }
+
+  @override
   void dispose() {
+    inviteController.removeListener(_onInviteCodeChanged);
     inviteController.dispose();
     callsignController.dispose();
     passwordController.dispose();
     super.dispose();
+  }
+
+  void _onInviteCodeChanged() {
+    _checkInviteType();
   }
 
   InputDecoration inputStyle(String hint) {
@@ -51,29 +69,74 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
     );
   }
 
+  void _assertInviteValid(Map<String, dynamic> invite) {
+    if (invite['revoked_at'] != null) {
+      throw Exception('Код запрошення скасовано');
+    }
+
+    final expiresAt = DateTime.tryParse(invite['expires_at']?.toString() ?? '');
+    if (expiresAt == null || expiresAt.isBefore(DateTime.now().toUtc())) {
+      throw Exception('Код запрошення прострочений');
+    }
+
+    final useCount = (invite['use_count'] as num?)?.toInt() ?? 0;
+    final maxUses = (invite['max_uses'] as num?)?.toInt() ?? 1;
+    if (useCount >= maxUses) {
+      throw Exception('Код запрошення вичерпано');
+    }
+  }
+
   Future<void> _checkInviteType() async {
     final code = inviteController.text.trim();
     if (code.isEmpty) {
-      setState(() => isLeaderInvite = false);
+      setState(() {
+        isLeaderInvite = false;
+        departments = [];
+        selectedDepartmentId = null;
+      });
       return;
     }
 
     try {
       final invite = await supabase
           .from('invites')
-          .select('permission')
+          .select('role, organization_id, revoked_at, expires_at, use_count, max_uses')
           .eq('code', code)
           .maybeSingle();
 
       if (!mounted) return;
 
+      if (invite == null) {
+        setState(() {
+          isLeaderInvite = false;
+          departments = [];
+          selectedDepartmentId = null;
+        });
+        return;
+      }
+
+      _assertInviteValid(invite);
+
+      final deptList = await DepartmentService.fetchActive(
+        invite['organization_id'].toString(),
+      );
+
       setState(() {
         isLeaderInvite =
-            (invite?['permission'] ?? '').toString().toLowerCase() ==
-            UserRole.leader;
+            (invite['role'] ?? '').toString().toLowerCase() == UserRole.leader;
+        departments = deptList;
+        selectedDepartmentId = isLeaderInvite
+            ? null
+            : (deptList.isNotEmpty ? deptList.first['id']?.toString() : null);
       });
     } catch (_) {
-      if (mounted) setState(() => isLeaderInvite = false);
+      if (mounted) {
+        setState(() {
+          isLeaderInvite = false;
+          departments = [];
+          selectedDepartmentId = null;
+        });
+      }
     }
   }
 
@@ -82,7 +145,6 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
     final callsign = callsignController.text.trim();
     final password = passwordController.text.trim();
 
-    // 1. Валідація введення на фронтенді
     if (inviteCode.isEmpty || callsign.isEmpty || password.isEmpty) {
       _showSnackBar('Заповніть усі поля');
       return;
@@ -93,12 +155,14 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
       return;
     }
 
-    try {
-      setState(() {
-        loading = true;
-      });
+    if (!isLeaderInvite && selectedDepartmentId == null) {
+      _showSnackBar('Оберіть підрозділ');
+      return;
+    }
 
-      // 2. Перевірка коду запрошення в таблиці invites
+    try {
+      setState(() => loading = true);
+
       final invite = await supabase
           .from('invites')
           .select()
@@ -106,23 +170,20 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
           .maybeSingle();
 
       if (invite == null) {
-        throw Exception('Код запрошення не знайдено або застарів');
+        throw Exception('Код запрошення не знайдено');
       }
 
-      final invitePermission =
-          (invite['permission'] ?? UserRole.member).toString().toLowerCase();
+      _assertInviteValid(invite);
 
-      final String assignedRole;
-      if (invitePermission == UserRole.leader) {
-        assignedRole = UserRole.leader;
-      } else {
-        assignedRole = selectedCategory;
-      }
+      final inviteRole =
+          (invite['role'] ?? UserRole.member).toString().toLowerCase();
 
-      // Твій крутий лайфхак з фейковим емейлом для простоти входу
+      final assignedRole = inviteRole == UserRole.leader
+          ? UserRole.leader
+          : UserRole.member;
+
       final fakeEmail = '${DateTime.now().millisecondsSinceEpoch}@klych.local';
 
-      // 3. Реєстрація в Supabase Auth
       final authResponse = await supabase.auth.signUp(
         email: fakeEmail,
         password: password,
@@ -133,27 +194,52 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
         throw Exception('Не вдалося створити акаунт в системі Auth');
       }
 
-      // 4. Запис профілю у твою таблицю public.users
-      await supabase.from('users').insert({
-        'auth_id': user.id,
-        'callsign': callsign,
-        ...UserRole.toDbFields(assignedRole),
-        'organization_id': invite['organization_id'],
+      final profile = await supabase
+          .from('users')
+          .insert({
+            'auth_id': user.id,
+            'callsign': callsign,
+            ...UserRole.toDbFields(assignedRole),
+            'organization_id': invite['organization_id'],
+            'department_id': selectedDepartmentId,
+            'status': UserStatus.available,
+          })
+          .select('id')
+          .single();
+
+      final newUserId = profile['id'].toString();
+
+      await supabase.from('invite_redemptions').insert({
+        'invite_id': invite['id'],
+        'user_id': newUserId,
       });
+
+      final useCount = (invite['use_count'] as num?)?.toInt() ?? 0;
+      await supabase
+          .from('invites')
+          .update({'use_count': useCount + 1})
+          .eq('id', invite['id']);
 
       if (!mounted) return;
 
       navigateToRoleHome(context, assignedRole);
     } catch (e) {
       if (!mounted) return;
-      _showSnackBar(e.toString().replaceAll('Exception: ', ''));
+      final message = _inviteErrorMessage(e);
+      _showSnackBar(message);
 
-      if (mounted) {
-        setState(() {
-          loading = false;
-        });
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  String _inviteErrorMessage(dynamic e) {
+    if (e is Exception) {
+      final text = e.toString();
+      if (text.startsWith('Exception: ')) {
+        return text.replaceFirst('Exception: ', '');
       }
     }
+    return AuthErrorMessages.from(e);
   }
 
   void _showSnackBar(String message) {
@@ -197,7 +283,6 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
                 ),
               ),
               const SizedBox(height: 50),
-
               TextField(
                 controller: inviteController,
                 style: const TextStyle(color: Colors.white),
@@ -205,14 +290,12 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
                 onEditingComplete: _checkInviteType,
               ),
               const SizedBox(height: 18),
-
               TextField(
                 controller: callsignController,
                 style: const TextStyle(color: Colors.white),
                 decoration: inputStyle('Позивний (наприклад, Хорт)'),
               ),
               const SizedBox(height: 18),
-
               TextField(
                 controller: passwordController,
                 obscureText: true,
@@ -233,84 +316,51 @@ class _InviteJoinScreenState extends State<InviteJoinScreen> {
                     style: TextStyle(color: Colors.orange.shade400),
                   ),
                 ),
-              ] else ...[
+              ] else if (departments.isNotEmpty) ...[
                 const SizedBox(height: 18),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 4,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
                   decoration: BoxDecoration(
                     color: const Color(0xFF1A1A1C),
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
-                      value: selectedCategory,
+                      value: selectedDepartmentId,
                       dropdownColor: const Color(0xFF1A1A1C),
                       isExpanded: true,
-                      icon: const Icon(
-                        Icons.keyboard_arrow_down,
-                        color: Colors.white54,
+                      hint: const Text(
+                        'Підрозділ',
+                        style: TextStyle(color: Colors.white54),
                       ),
+                      icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white54),
                       style: const TextStyle(color: Colors.white, fontSize: 16),
-                      items: const [
-                        DropdownMenuItem(
-                          value: UserRole.member,
-                          child: Text('Учасник (Other)'),
-                        ),
-                        DropdownMenuItem(
-                          value: UserRole.driver,
-                          child: Text('Водій (Driver)'),
-                        ),
-                        DropdownMenuItem(
-                          value: UserRole.medic,
-                          child: Text('Медик (Medic)'),
-                        ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() => selectedCategory = value);
-                        }
-                      },
+                      items: departments
+                          .map(
+                            (d) => DropdownMenuItem(
+                              value: d['id'].toString(),
+                              child: Text(DepartmentLabels.localize(d['name']?.toString())),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) => setState(() => selectedDepartmentId = value),
                     ),
                   ),
+                ),
+              ] else if (inviteController.text.trim().isNotEmpty) ...[
+                const SizedBox(height: 18),
+                const Text(
+                  'Завантаження підрозділів...',
+                  style: TextStyle(color: Colors.white38),
                 ),
               ],
               const SizedBox(height: 34),
-
-              SizedBox(
-                width: double.infinity,
-                height: 66,
-                child: ElevatedButton(
-                  onPressed: loading ? null : join,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade700,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.red.shade900.withValues(
-                      alpha: 0.4,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                  ),
-                  child: loading
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2.5,
-                          ),
-                        )
-                      : const Text(
-                          'ПІДКЛЮЧИТИСЬ',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                ),
+              KlychPrimaryButton(
+                label: 'ПІДКЛЮЧИТИСЬ',
+                icon: Icons.login,
+                loading: loading,
+                onPressed: loading ? null : join,
+                color: KlychTheme.alertRed,
               ),
             ],
           ),

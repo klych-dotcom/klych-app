@@ -2,21 +2,29 @@ import '../models/alert_constants.dart';
 import '../models/alert_targeting.dart';
 
 class AlertUtils {
-  static bool isRedAlert(String? type) {
-    final normalized = type?.trim().toUpperCase();
+  static String? resolveLevel(Map<String, dynamic> alert) {
+    return alert['level']?.toString() ?? alert['type']?.toString();
+  }
+
+  static bool isRedAlert(String? level) {
+    final normalized = level?.trim().toUpperCase();
     return normalized == AlertLevel.red ||
         normalized == 'GENERAL' ||
         normalized == 'TEST';
   }
 
-  static bool isGreenAlert(String? type) {
-    return type?.trim().toUpperCase() == AlertLevel.green;
+  static bool isGreenAlert(String? level) {
+    return level?.trim().toUpperCase() == AlertLevel.green;
   }
 
-  static String levelLabel(String? type) {
-    if (isGreenAlert(type)) return AlertLevel.green;
-    if (isRedAlert(type)) return AlertLevel.red;
-    return type?.toUpperCase() ?? AlertLevel.red;
+  static String levelLabel(String? level) {
+    if (isGreenAlert(level)) return AlertLevel.green;
+    if (isRedAlert(level)) return AlertLevel.red;
+    return level?.toUpperCase() ?? AlertLevel.red;
+  }
+
+  static String levelLabelFromAlert(Map<String, dynamic> alert) {
+    return levelLabel(resolveLevel(alert));
   }
 
   /// Label for display — reflects persisted target only when server targeting is on.
@@ -29,10 +37,8 @@ class AlertUtils {
         AlertTarget.organization;
   }
 
-  /// Org-scoped delivery check. Role/target filtering is server-side only.
-  ///
-  /// TODO: When [AlertTargeting.serverSideEnabled], rely on server recipient
-  /// lists or persisted [alert['target']] — do not filter by role here.
+  /// Prefer [AlertDeliveryService.shouldUserReceiveAlert] for delivery checks.
+  @Deprecated('Use AlertDeliveryService.shouldUserReceiveAlert')
   static bool shouldReceiveAlert(
     Map<String, dynamic> alert,
     String organizationId,

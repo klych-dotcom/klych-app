@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
 import 'create_server_screen.dart';
 import 'join_server_screen.dart';
 
@@ -51,35 +53,18 @@ class StartScreen extends StatelessWidget {
               const SizedBox(height: 70),
 
               // Кнопка: Створити сервер
-              SizedBox(
-                width: double.infinity,
-                height: 64,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const CreateServerScreen(),
-                      ),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade700,
-                    shadowColor:
-                        Colors.transparent, // Прибираємо зайві тіні матеріалу
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
+              KlychPrimaryButton(
+                label: 'СТВОРИТИ СЕРВЕР',
+                icon: Icons.dns_outlined,
+                color: KlychTheme.alertRed,
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const CreateServerScreen(),
                     ),
-                  ),
-                  child: const Text(
-                    'СТВОРИТИ СЕРВЕР',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white, // Явно фіксуємо білий колір тексту
-                    ),
-                  ),
-                ),
+                  );
+                },
               ),
               const SizedBox(height: 18),
 

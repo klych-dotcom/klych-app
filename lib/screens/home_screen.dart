@@ -6,11 +6,17 @@ import 'package:assets_audio_player/assets_audio_player.dart';
 import 'package:vibration/vibration.dart';
 
 import '../main.dart';
+import '../mixins/alert_realtime_listener.dart';
+import '../models/alert_recipients_selection.dart';
 import '../models/alert_constants.dart';
 import '../models/user_role.dart';
 import '../services/alert_service.dart';
+import '../services/user_org_service.dart';
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
 import 'start_screen.dart';
 import 'users_screen.dart';
+import 'departments_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,18 +25,27 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with AlertRealtimeListener {
   String organizationName = 'KLYCH SERVER';
   String memberInviteCode = '------';
   String leaderInviteCode = '------';
   String? organizationId;
+  String? adminUserId;
 
   bool loading = true;
   bool regeneratingMemberCode = false;
   bool regeneratingLeaderCode = false;
 
-  final AssetsAudioPlayer player = AssetsAudioPlayer();
   final TextEditingController alertMessageController = TextEditingController();
+
+  @override
+  String? get alertOrganizationId => organizationId;
+
+  @override
+  String? get alertCurrentUserId => adminUserId;
+
+  @override
+  Future<void> onOrgAlertInserted(Map<String, dynamic> alert) async {}
 
   @override
   void initState() {
@@ -40,12 +55,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    player.stop();
-    Vibration.cancel();
-
-    player.dispose();
+    disposeAlertRealtime();
     alertMessageController.dispose();
-
     super.dispose();
   }
 
@@ -58,11 +69,12 @@ class _HomeScreenState extends State<HomeScreen> {
       // USER
       final userData = await supabase
           .from('users')
-          .select('organization_id')
+          .select('organization_id, id')
           .eq('auth_id', user.id)
           .single();
 
       organizationId = userData['organization_id'];
+      adminUserId = userData['id']?.toString();
 
       // ORGANIZATION
       final organization = await supabase
@@ -79,6 +91,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // INVITES (member + leader)
       await _loadInvites();
+
+      subscribeOrgAlerts('admin-alerts');
     } catch (e) {
       _showErrorSnackBar('Помилка завантаження даних: $e');
     } finally {
@@ -90,14 +104,31 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<String> _createInvite(String permission) async {
+  static const _inviteLifetime = Duration(days: 30);
+
+  bool _isInviteActive(Map<String, dynamic> row) {
+    if (row['revoked_at'] != null) return false;
+    final expiresAt = DateTime.tryParse(row['expires_at']?.toString() ?? '');
+    if (expiresAt == null || expiresAt.isBefore(DateTime.now().toUtc())) {
+      return false;
+    }
+    final useCount = (row['use_count'] as num?)?.toInt() ?? 0;
+    final maxUses = (row['max_uses'] as num?)?.toInt() ?? 1;
+    return useCount < maxUses;
+  }
+
+  Future<String> _createInvite(String role) async {
     final random = Random();
     final code = (100000 + random.nextInt(900000)).toString();
+    final expiresAt = DateTime.now().toUtc().add(_inviteLifetime);
 
     await supabase.from('invites').insert({
       'organization_id': organizationId,
       'code': code,
-      'permission': permission,
+      'role': role,
+      'expires_at': expiresAt.toIso8601String(),
+      'max_uses': role == UserRole.leader ? 10 : 100,
+      if (adminUserId != null) 'created_by': adminUserId,
     });
 
     return code;
@@ -114,11 +145,11 @@ class _HomeScreenState extends State<HomeScreen> {
     String? memberCode;
     String? leaderCode;
 
-    for (final row in rows) {
-      final permission =
-          (row['permission'] ?? UserRole.member).toString().toLowerCase();
-      if (permission == UserRole.leader) {
-        leaderCode = row['code']?.toString();
+    for (final row in List<Map<String, dynamic>>.from(rows)) {
+      if (!_isInviteActive(row)) continue;
+      final role = (row['role'] ?? UserRole.member).toString().toLowerCase();
+      if (role == UserRole.leader) {
+        leaderCode ??= row['code']?.toString();
       } else {
         memberCode ??= row['code']?.toString();
       }
@@ -135,10 +166,10 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> regenerateInviteCode(String permission) async {
+  Future<void> regenerateInviteCode(String role) async {
     if (organizationId == null) return;
 
-    final isLeader = permission == UserRole.leader;
+    final isLeader = role == UserRole.leader;
 
     try {
       setState(() {
@@ -152,11 +183,31 @@ class _HomeScreenState extends State<HomeScreen> {
       final random = Random();
       final newCode = (100000 + random.nextInt(900000)).toString();
 
-      await supabase
+      final rows = await supabase
           .from('invites')
-          .update({'code': newCode})
+          .select()
           .eq('organization_id', organizationId!)
-          .eq('permission', permission);
+          .eq('role', role);
+
+      Map<String, dynamic>? activeInvite;
+      for (final row in List<Map<String, dynamic>>.from(rows)) {
+        if (_isInviteActive(row)) {
+          activeInvite = row;
+          break;
+        }
+      }
+
+      if (activeInvite != null) {
+        await supabase
+            .from('invites')
+            .update({'code': newCode})
+            .eq('id', activeInvite['id']);
+      } else {
+        await _createInvite(role);
+        if (!mounted) return;
+        await _loadInvites();
+        return;
+      }
 
       await Future.delayed(const Duration(milliseconds: 500));
 
@@ -234,16 +285,20 @@ class _HomeScreenState extends State<HomeScreen> {
           ? AlertService.defaultMessage(AlertLevel.red)
           : messageText;
 
+      final senderUserId = await UserOrgService.currentUserId();
+      if (senderUserId == null) return;
+
       await AlertService.createAlert(
         organizationId: organizationId!,
         message: alertMessage,
         level: AlertLevel.red,
-        target: AlertTarget.organization,
-        createdByAuthId: user.id,
-        createdByName: 'ADMIN',
+        recipients: AlertRecipientsSelection(),
+        senderUserId: senderUserId,
+        isTest: true,
       );
 
-      // AUDIO
+      // AUDIO — local test feedback for admin-initiated org-wide test
+      final player = getOrCreatePlayer();
       await player.open(
         Audio("assets/alarm.mp3"),
         autoStart: true,
@@ -298,8 +353,8 @@ class _HomeScreenState extends State<HomeScreen> {
             actions: [
               TextButton(
                 onPressed: () async {
+                  final player = getOrCreatePlayer();
                   await player.stop();
-
                   Vibration.cancel();
 
                   if (!dialogContext.mounted) return;
@@ -342,48 +397,34 @@ class _HomeScreenState extends State<HomeScreen> {
     required VoidCallback onCopy,
     required VoidCallback onRefresh,
   }) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1C),
-        borderRadius: BorderRadius.circular(24),
-      ),
+    return KlychCard(
+      padding: const EdgeInsets.all(KlychTheme.spaceLg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: Colors.white38,
-              letterSpacing: 2,
-              fontSize: 12,
-            ),
-          ),
-          const SizedBox(height: 10),
+          Text(title, style: KlychTheme.labelCaps),
+          const SizedBox(height: KlychTheme.spaceSm),
           Row(
             children: [
               Expanded(
                 child: SelectableText(
                   code,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 3,
+                  style: KlychTheme.titleMedium.copyWith(
+                    fontSize: 22,
+                    letterSpacing: 2,
                   ),
                 ),
               ),
               IconButton(
                 onPressed: onCopy,
-                icon: const Icon(Icons.copy_rounded, color: Colors.white54),
+                icon: const Icon(Icons.copy_rounded, color: KlychTheme.textSecondary),
               ),
               AnimatedRotation(
                 turns: regenerating ? 0.5 : 0,
                 duration: const Duration(milliseconds: 500),
                 child: IconButton(
                   onPressed: regenerating ? null : onRefresh,
-                  icon: const Icon(Icons.refresh_rounded, color: Colors.white54),
+                  icon: const Icon(Icons.refresh_rounded, color: KlychTheme.textSecondary),
                 ),
               ),
             ],
@@ -401,12 +442,11 @@ class _HomeScreenState extends State<HomeScreen> {
       },
 
       child: Scaffold(
-        backgroundColor: const Color(0xFF0F0F10),
-
+        backgroundColor: KlychTheme.background,
         body: loading
-            ? const Center(child: CircularProgressIndicator(color: Colors.red))
+            ? const Center(child: CircularProgressIndicator())
             : SafeArea(
-                child: Padding(
+                child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
 
                   child: Column(
@@ -415,55 +455,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       // HEADER
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            width: 58,
-                            height: 58,
-
-                            decoration: BoxDecoration(
-                              color: Colors.red.shade700,
-                              borderRadius: BorderRadius.circular(18),
-                            ),
-
-                            child: const Icon(
-                              Icons.warning_rounded,
-                              color: Colors.white,
-                            ),
-                          ),
-
-                          const SizedBox(width: 16),
-
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-
-                              children: [
-                                const Text(
-                                  'KLYCH',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 28,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-
-                                Text(
-                                  organizationName,
-                                  overflow: TextOverflow.ellipsis,
-
-                                  style: const TextStyle(color: Colors.white54),
-                                ),
-                              ],
+                            child: KlychAppHeader(
+                              organization: organizationName,
+                              callsign: 'ADMIN',
                             ),
                           ),
-
                           IconButton(
                             onPressed: logout,
-
-                            icon: const Icon(
-                              Icons.logout,
-                              color: Colors.white54,
-                            ),
+                            icon: const Icon(Icons.logout, color: KlychTheme.textSecondary),
                           ),
                         ],
                       ),
@@ -495,122 +497,67 @@ class _HomeScreenState extends State<HomeScreen> {
                       // ALERT MESSAGE
                       TextField(
                         controller: alertMessageController,
-
-                        maxLines: 3,
-
-                        style: const TextStyle(color: Colors.white),
-
-                        decoration: InputDecoration(
+                        maxLines: 2,
+                        decoration: const InputDecoration(
                           hintText: 'Повідомлення до тривоги...',
-
-                          hintStyle: const TextStyle(color: Colors.white38),
-
-                          filled: true,
-                          fillColor: const Color(0xFF1A1A1C),
-
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(22),
-                            borderSide: BorderSide.none,
-                          ),
-
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(22),
-                            borderSide: BorderSide.none,
-                          ),
-
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(22),
-                            borderSide: BorderSide.none,
-                          ),
                         ),
                       ),
 
-                      const SizedBox(height: 20),
+                      const SizedBox(height: KlychTheme.spaceMd),
 
-                      // ALERT BUTTON
-                      SizedBox(
-                        width: double.infinity,
-                        height: 64,
-
-                        child: ElevatedButton.icon(
-                          onPressed: testAlert,
-
-                          icon: const Icon(
-                            Icons.notifications_active_rounded,
-                            color: Colors.white,
-                          ),
-
-                          label: const Text(
-                            'ТЕСТ ТРИВОГИ',
-
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.shade700,
-
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                          ),
-                        ),
+                      KlychPrimaryButton(
+                        label: 'ТЕСТ ТРИВОГИ',
+                        icon: Icons.notifications_active_rounded,
+                        onPressed: testAlert,
+                        color: KlychTheme.alertRed,
                       ),
 
-                      const SizedBox(height: 18),
+                      const SizedBox(height: KlychTheme.spaceSm),
 
-                      // USERS BUTTON
                       SizedBox(
                         width: double.infinity,
-                        height: 58,
-
+                        height: 48,
                         child: OutlinedButton.icon(
                           onPressed: () {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (_) => const UsersScreen(),
+                                builder: (_) => const UsersScreen(adminMode: true),
                               ),
                             );
                           },
-
-                          icon: const Icon(
-                            Icons.people_alt_rounded,
-                            color: Colors.white70,
-                          ),
-
-                          label: const Text(
-                            'КОРИСТУВАЧІ',
-
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-
-                          style: OutlinedButton.styleFrom(
-                            side: const BorderSide(color: Colors.white12),
-
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                          ),
+                          icon: const Icon(Icons.people_alt_outlined),
+                          label: const Text('КОРИСТУВАЧІ'),
                         ),
                       ),
 
-                      const Spacer(),
+                      const SizedBox(height: KlychTheme.spaceSm),
 
-                      // FOOTER
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const DepartmentsScreen(),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.apartment_rounded),
+                          label: const Text('ПІДРОЗДІЛИ'),
+                        ),
+                      ),
+
+                      const SizedBox(height: KlychTheme.spaceXl),
+
                       Center(
                         child: Text(
                           'KLYCH Emergency System',
-
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.22),
-                            fontSize: 12,
+                          style: KlychTheme.bodyMedium.copyWith(
+                            fontSize: 11,
+                            color: KlychTheme.textMuted,
                           ),
                         ),
                       ),

@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -10,10 +10,18 @@ import 'package:intl/intl.dart';
 import '../main.dart';
 import '../models/user_role.dart';
 import '../models/alert_constants.dart';
+import '../models/user_status.dart';
+import '../services/user_org_service.dart';
+import '../services/alert_delivery_service.dart';
+import '../services/alert_receipt_service.dart';
+import '../theme/klych_theme.dart';
+import '../widgets/klych_components.dart';
+import '../widgets/member_status_selector.dart';
 import '../utils/alert_utils.dart';
 import '../utils/alert_delivery_tracker.dart';
 import 'alert_screen.dart';
 import 'join_server_screen.dart';
+import 'profile_screen.dart';
 
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({super.key});
@@ -31,6 +39,9 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
   String role = UserRole.member;
   String organization = 'KLYCH';
   String? organizationId;
+  String? currentUserId;
+  String selectedStatus = UserStatus.available;
+  bool updatingStatus = false;
 
   bool connected = false;
 
@@ -39,6 +50,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
   final AlertDeliveryTracker _deliveryTracker = AlertDeliveryTracker();
 
   DateTime? clearedAt;
+  Timer? _historyReloadDebounce;
 
   @override
   void initState() {
@@ -48,7 +60,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
   Future<void> _init() async {
     await loadUser();
-    await loadLocalAlerts();
+    final prefs = await SharedPreferences.getInstance();
+    final cleared = prefs.getString('alerts_cleared_at');
+    if (cleared != null) clearedAt = DateTime.tryParse(cleared);
+    await _loadAlertHistory();
     subscribeAlerts();
   }
 
@@ -74,8 +89,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
       setState(() {
         organizationId = userData['organization_id']?.toString();
+        currentUserId = userData['id']?.toString();
         callsign = userData['callsign'] ?? 'MEMBER';
-        role = UserRole.resolve(userData);
+        selectedStatus = UserStatus.normalize(userData['status']?.toString());
+        role = UserRole.authorizationRole(userData);
         organization = org['name'] ?? 'KLYCH';
       });
     } catch (e) {
@@ -83,62 +100,68 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
     }
   }
 
-  Future<void> loadLocalAlerts() async {
+  Future<void> _loadAlertHistory() async {
+    final orgId = organizationId;
+    final userId = currentUserId;
+    if (orgId == null || userId == null) return;
+
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final loaded = await AlertDeliveryService.fetchUserAlertHistory(
+        userId: userId,
+        organizationId: orgId,
+      );
 
-      final cleared = prefs.getString('alerts_cleared_at');
-
-      if (cleared != null) {
-        clearedAt = DateTime.tryParse(cleared);
-      }
-
-      final alertsJson = prefs.getString('alerts_history');
-
-      if (alertsJson == null) return;
-
-      final decoded = jsonDecode(alertsJson);
-
-      final loadedAlerts = List<Map<String, dynamic>>.from(decoded);
-
-      final filteredAlerts = loadedAlerts.where((alert) {
+      final filtered = loaded.where((alert) {
         if (clearedAt == null) return true;
-
-        final createdAt = DateTime.tryParse(alert['created_at'] ?? '');
-
+        final createdAt = DateTime.tryParse(alert['created_at']?.toString() ?? '');
         if (createdAt == null) return true;
-
         return createdAt.isAfter(clearedAt!);
       }).toList();
 
-      setState(() {
-        alerts = filteredAlerts;
-      });
+      if (!mounted) return;
+      setState(() => alerts = filtered);
       _deliveryTracker.seedFromHistory(alerts);
     } catch (e) {
-      debugPrint('$e');
+      debugPrint('_loadAlertHistory: $e');
     }
   }
 
-  Future<void> saveAlerts() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-
-      await prefs.setString('alerts_history', jsonEncode(alerts));
-    } catch (e) {
-      debugPrint('$e');
-    }
+  /// Coalesces rapid realtime inserts into a single history refresh.
+  void _scheduleHistoryReload() {
+    _historyReloadDebounce?.cancel();
+    _historyReloadDebounce = Timer(const Duration(milliseconds: 600), () {
+      if (mounted) _loadAlertHistory();
+    });
   }
 
   Future<void> clearAlerts() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Очистити історію?'),
+        content: const Text(
+          'Історія оповіщень буде прихована на цьому пристрої. '
+          'Дані в системі залишаться без змін.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('СКАСУВАТИ'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('ОЧИСТИТИ', style: TextStyle(color: KlychTheme.alertRed)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
     try {
       final prefs = await SharedPreferences.getInstance();
-
       final now = DateTime.now();
-
       await prefs.setString('alerts_cleared_at', now.toIso8601String());
-
-      await prefs.setString('alerts_history', jsonEncode([]));
 
       setState(() {
         alerts.clear();
@@ -185,26 +208,37 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
     String orgId,
   ) async {
     if (!_deliveryTracker.tryMarkProcessed(data)) return;
-    if (!AlertUtils.shouldReceiveAlert(data, orgId)) return;
 
-    final createdAt = DateTime.tryParse(data['created_at'] ?? '');
+    final userId = currentUserId;
+    if (userId == null) return;
 
-    if (clearedAt != null &&
-        createdAt != null &&
-        createdAt.isBefore(clearedAt!)) {
-      return;
-    }
+    final shouldReceive = await AlertDeliveryService.shouldUserReceiveAlert(
+      alert: data,
+      organizationId: orgId,
+      userId: userId,
+    );
+    if (!shouldReceive) return;
 
-    alerts.insert(0, data);
-    await saveAlerts();
+    _scheduleHistoryReload();
 
     if (!mounted) return;
-    setState(() {});
 
-    final authUserId = supabase.auth.currentUser?.id;
-    if (AlertDeliveryTracker.isOwnAlert(data, authUserId)) return;
+    final currentId = currentUserId;
+    if (AlertDeliveryTracker.isOwnAlert(data, currentId)) return;
 
-    if (AlertUtils.isRedAlert(data['type']?.toString())) {
+    final alertId = data['id']?.toString();
+    if (alertId != null && currentId != null) {
+      try {
+        await AlertReceiptService.markDelivered(
+          alertId: alertId,
+          userId: currentId,
+        );
+      } catch (e) {
+        debugPrint('markDelivered: $e');
+      }
+    }
+
+    if (AlertUtils.isRedAlert(AlertUtils.resolveLevel(data))) {
       await triggerRedAlert(data);
     } else {
       showGreenNotification(data);
@@ -213,10 +247,34 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
   void showGreenNotification(Map<String, dynamic> alert) {
     if (!mounted) return;
+
+    final alertId = alert['id']?.toString();
+    final userId = currentUserId;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: Colors.green.shade900,
         content: Text(alert['message']?.toString() ?? 'Інформаційне повідомлення'),
+        action: alertId != null && userId != null
+            ? SnackBarAction(
+                label: 'ПІДТВЕРДИТИ',
+                textColor: Colors.white,
+                onPressed: () async {
+                  try {
+                    await AlertReceiptService.markOpened(
+                      alertId: alertId,
+                      userId: userId,
+                    );
+                    await AlertReceiptService.markAcknowledged(
+                      alertId: alertId,
+                      userId: userId,
+                    );
+                  } catch (e) {
+                    debugPrint('green ack: $e');
+                  }
+                },
+              )
+            : null,
       ),
     );
   }
@@ -241,11 +299,43 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
         context,
         MaterialPageRoute(
           fullscreenDialog: true,
-          builder: (_) => AlertScreen(alert: alert, player: player),
+          builder: (_) => AlertScreen(
+            alert: alert,
+            player: player,
+            userId: currentUserId,
+          ),
         ),
       );
     } catch (e) {
       debugPrint('$e');
+    }
+  }
+
+  Future<void> _updateStatus(String status) async {
+    if (currentUserId == null || updatingStatus) return;
+
+    setState(() {
+      updatingStatus = true;
+      selectedStatus = status;
+    });
+
+    try {
+      await UserOrgService.updateStatus(
+        userId: currentUserId!,
+        status: status,
+      );
+    } catch (e) {
+      debugPrint('$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Не вдалося оновити статус'),
+            backgroundColor: Colors.red.shade900,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => updatingStatus = false);
     }
   }
 
@@ -254,22 +344,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
       context: context,
       builder: (_) {
         return AlertDialog(
-          backgroundColor: const Color(0xFF1C1C1E),
-
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-          ),
-
-          title: const Text(
-            'ВИЙТИ З СИСТЕМИ?',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-
+          title: const Text('ВИЙТИ З СИСТЕМИ?'),
           content: const Text(
             'Локальна історія оповіщень буде очищена з пристрою.\n\nДля повторного доступу знадобиться повторна авторизація.',
-            style: TextStyle(color: Colors.white70),
           ),
-
           actions: [
             TextButton(
               onPressed: () {
@@ -277,10 +355,9 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
               },
               child: const Text(
                 'СКАСУВАТИ',
-                style: TextStyle(color: Colors.white54),
+                style: TextStyle(color: KlychTheme.textMuted),
               ),
             ),
-
             TextButton(
               onPressed: () {
                 Navigator.pop(context, true);
@@ -288,7 +365,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
               child: const Text(
                 'ВИЙТИ',
                 style: TextStyle(
-                  color: Colors.red,
+                  color: KlychTheme.alertRed,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -347,6 +424,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
 
   @override
   void dispose() {
+    _historyReloadDebounce?.cancel();
     channel?.unsubscribe();
 
     player.dispose();
@@ -357,264 +435,91 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F10),
-
+      backgroundColor: KlychTheme.background,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
-
+          padding: const EdgeInsets.all(KlychTheme.spaceLg),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    width: 58,
-                    height: 58,
-
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade700,
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-
-                    child: const Icon(
-                      Icons.warning_rounded,
-                      color: Colors.white,
-                    ),
-                  ),
-
-                  const SizedBox(width: 16),
-
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-
-                      children: [
-                        const Text(
-                          'KLYCH',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-
-                        Text(
-                          organization,
-                          style: const TextStyle(color: Colors.white54),
-                        ),
-                      ],
+                    child: KlychAppHeader(
+                      organization: organization,
+                      callsign: callsign,
+                      connected: connected,
                     ),
                   ),
-
+                  IconButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                      );
+                    },
+                    icon: const Icon(Icons.person_outline, color: KlychTheme.textSecondary),
+                  ),
                   IconButton(
                     onPressed: logout,
-                    icon: const Icon(Icons.logout, color: Colors.white54),
+                    icon: const Icon(Icons.logout, color: KlychTheme.textSecondary),
                   ),
                 ],
               ),
-
-              const SizedBox(height: 34),
-
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1A1A1C),
-                  borderRadius: BorderRadius.circular(28),
-                ),
-
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-
-                  children: [
-                    Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 5,
-                          backgroundColor: connected
-                              ? Colors.green
-                              : Colors.red,
-                        ),
-
-                        const SizedBox(width: 10),
-
-                        Text(
-                          connected ? 'SYSTEM ACTIVE' : 'SYSTEM OFFLINE',
-
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14,
-                            letterSpacing: 1.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 28),
-
-                    Text(
-                      callsign.toUpperCase(),
-
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    Text(
-                      role.toUpperCase(),
-
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 16,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                  ],
+              const SizedBox(height: KlychTheme.spaceLg),
+              KlychCard(
+                padding: const EdgeInsets.all(KlychTheme.spaceLg),
+                child: MemberStatusSelector(
+                  selectedStatus: selectedStatus,
+                  enabled: !updatingStatus,
+                  onChanged: _updateStatus,
                 ),
               ),
-
-              const SizedBox(height: 28),
-
-              SizedBox(
-                width: double.infinity,
-                height: 62,
-
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    await triggerRedAlert({
-                      'type': AlertLevel.red,
-                      'message': 'Тест локальної тривоги',
-                      'created_by_name': 'LOCAL TEST',
-                      'created_at': DateTime.now().toIso8601String(),
-                    });
-                  },
-
-                  icon: const Icon(Icons.notifications_active),
-
-                  label: const Text(
-                    'ЛОКАЛЬНИЙ ТЕСТ',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade700,
-                    foregroundColor: Colors.white,
-
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 30),
-
+              const SizedBox(height: KlychTheme.spaceMd),
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-
                 children: [
-                  const Text(
-                    'ІСТОРІЯ ОПОВІЩЕНЬ',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-
+                  Text('ІСТОРІЯ ОПОВІЩЕНЬ', style: KlychTheme.labelCaps),
+                  const Spacer(),
                   IconButton(
-                    onPressed: clearAlerts,
-                    icon: const Icon(
-                      Icons.delete_outline_rounded,
-                      color: Colors.white54,
-                    ),
+                    onPressed: alerts.isEmpty ? null : clearAlerts,
+                    icon: const Icon(Icons.delete_outline, size: 20),
+                    color: KlychTheme.textMuted,
+                    tooltip: 'Очистити історію',
                   ),
                 ],
               ),
+              const SizedBox(height: KlychTheme.spaceSm),
+              SizedBox(
+                height: MediaQuery.sizeOf(context).height * 0.42,
+                child: RefreshIndicator(
+                  onRefresh: _loadAlertHistory,
+                  color: KlychTheme.accent,
+                  child: alerts.isEmpty
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 80),
+                            KlychEmptyState(message: 'Немає активності'),
+                          ],
+                        )
+                      : ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          itemCount: alerts.length,
+                          itemBuilder: (_, index) {
+                            final alert = alerts[index];
+                            final level = AlertUtils.levelLabelFromAlert(alert);
+                            final isGreen = level == AlertLevel.green;
 
-              const SizedBox(height: 12),
-
-              Expanded(
-                child: alerts.isEmpty
-                    ? const Center(
-                        child: Text(
-                          'Немає активності',
-                          style: TextStyle(color: Colors.white38),
+                            return KlychAlertHistoryTile(
+                              message: alert['message']?.toString() ?? 'ALERT',
+                              subtitle:
+                                  '$level · ${formatDate(alert['created_at'])} · ${formatTime(alert['created_at'])}',
+                              isGreen: isGreen,
+                            );
+                          },
                         ),
-                      )
-                    : ListView.builder(
-                        itemCount: alerts.length,
-
-                        itemBuilder: (_, index) {
-                          final alert = alerts[index];
-                          final level = AlertUtils.levelLabel(
-                            alert['type']?.toString(),
-                          );
-                          final isGreen = level == AlertLevel.green;
-
-                          return Container(
-                            margin: const EdgeInsets.only(bottom: 14),
-                            padding: const EdgeInsets.all(18),
-
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1A1A1C),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-
-                            child: Row(
-                              children: [
-                                Icon(
-                                  isGreen
-                                      ? Icons.info_outline_rounded
-                                      : Icons.warning_amber_rounded,
-                                  color: isGreen ? Colors.green : Colors.red,
-                                ),
-
-                                const SizedBox(width: 14),
-
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-
-                                    children: [
-                                      Text(
-                                        alert['message'] ?? 'ALERT',
-
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-
-                                      const SizedBox(height: 6),
-
-                                      Text(
-                                        '$level · ${formatDate(alert['created_at'])} · ${formatTime(alert['created_at'])}',
-
-                                        style: TextStyle(
-                                          color: isGreen
-                                              ? Colors.green.shade400
-                                              : Colors.white54,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
+                ),
               ),
             ],
           ),
