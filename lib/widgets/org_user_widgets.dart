@@ -75,6 +75,7 @@ class UserOrgListTile extends StatelessWidget {
     final roleColor = KlychTheme.roleColor(role);
 
     if (compact) {
+      // High-density single-line row: callsign · department · status.
       return Opacity(
         opacity: disabled ? 0.5 : 1,
         child: KlychCard(
@@ -83,33 +84,29 @@ class UserOrgListTile extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: 4),
           padding: const EdgeInsets.symmetric(
             horizontal: KlychTheme.spaceMd,
-            vertical: 6,
+            vertical: 7,
           ),
           child: Row(
             children: [
               if (leading != null) ...[leading!, const SizedBox(width: KlychTheme.spaceSm)],
+              Text(
+                (user['callsign'] ?? 'UNKNOWN').toString(),
+                style: KlychTheme.titleMedium.copyWith(fontSize: 14),
+              ),
+              const SizedBox(width: KlychTheme.spaceSm),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      (user['callsign'] ?? 'UNKNOWN').toString(),
-                      style: KlychTheme.titleMedium.copyWith(fontSize: 14),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${role.toUpperCase()} · ${UserOrgService.departmentName(user)}',
-                      style: KlychTheme.bodyMedium.copyWith(
-                        fontSize: 11,
-                        color: roleColor,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+                child: Text(
+                  UserOrgService.departmentName(user),
+                  style: KlychTheme.bodyMedium.copyWith(
+                    fontSize: 11,
+                    color: KlychTheme.textMuted,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
+              const SizedBox(width: KlychTheme.spaceSm),
               StatusBadge(status: status),
-              if (trailing != null) trailing!,
+              ?trailing,
             ],
           ),
         ),
@@ -152,7 +149,7 @@ class UserOrgListTile extends StatelessWidget {
                 ],
               ),
             ),
-            if (trailing != null) trailing!,
+            ?trailing,
           ],
         ),
       ),

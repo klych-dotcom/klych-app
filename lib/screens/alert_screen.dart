@@ -4,6 +4,7 @@ import 'package:vibration/vibration.dart';
 
 import '../services/alert_receipt_service.dart';
 import '../utils/alert_utils.dart';
+import '../widgets/linkified_text.dart';
 
 class AlertScreen extends StatefulWidget {
   const AlertScreen({
@@ -92,13 +93,21 @@ class _AlertScreenState extends State<AlertScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              Text(
-                widget.alert['message'] ?? 'ALERT',
+              LinkifiedText(
+                text: (widget.alert['message'] ?? 'ALERT').toString(),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 22,
                   height: 1.4,
+                ),
+                linkStyle: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  height: 1.4,
+                  fontWeight: FontWeight.w700,
+                  decoration: TextDecoration.underline,
+                  decorationColor: Colors.white,
                 ),
               ),
               const SizedBox(height: 18),

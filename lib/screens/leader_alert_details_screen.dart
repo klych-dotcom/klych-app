@@ -9,6 +9,7 @@ import '../services/alert_receipt_service.dart';
 import '../theme/klych_theme.dart';
 import '../utils/alert_utils.dart';
 import '../widgets/klych_components.dart';
+import '../widgets/linkified_text.dart';
 
 class LeaderAlertDetailsScreen extends StatefulWidget {
   const LeaderAlertDetailsScreen({super.key, required this.alert});
@@ -112,8 +113,8 @@ class _LeaderAlertDetailsScreenState extends State<LeaderAlertDetailsScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          widget.alert['message']?.toString() ?? '—',
+                        LinkifiedText(
+                          text: widget.alert['message']?.toString() ?? '—',
                           style: KlychTheme.titleMedium,
                         ),
                         const SizedBox(height: KlychTheme.spaceSm),

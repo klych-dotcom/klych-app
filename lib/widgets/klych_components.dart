@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/alert_constants.dart';
 import '../theme/klych_theme.dart';
+import 'linkified_text.dart';
 
 class KlychCard extends StatelessWidget {
   const KlychCard({
@@ -79,7 +80,7 @@ class KlychSectionHeader extends StatelessWidget {
               ],
             ),
           ),
-          if (trailing != null) trailing!,
+          ?trailing,
         ],
       ),
     );
@@ -466,8 +467,8 @@ class KlychAlertHistoryTile extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            message,
+          LinkifiedText(
+            text: message,
             style: KlychTheme.titleMedium.copyWith(fontSize: 14),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,

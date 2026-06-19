@@ -283,9 +283,12 @@ class _UsersScreenState extends State<UsersScreen> {
   void _alertSelectedUsers() {
     if (_selectedUserIds.isEmpty) return;
 
+    // Manual selection must target ONLY the chosen users — never fall back to
+    // org-wide (the constructor defaults orgWide to true).
     final recipients = AlertRecipientsSelection(
       userIds: Set<String>.from(_selectedUserIds),
       userNames: Map<String, String>.from(_selectedUserNames),
+      orgWide: false,
     );
 
     // Replace the stack so we land on a single LeaderHomeScreen instance

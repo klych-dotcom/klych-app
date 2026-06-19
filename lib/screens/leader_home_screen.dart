@@ -104,6 +104,22 @@ class _LeaderHomeScreenState extends State<LeaderHomeScreen> {
 
   void _invalidateResolver() => _resolverCache = null;
 
+  /// Applies a recipient selection returned from [LeaderOrgScreen].
+  ///
+  /// That screen always loads fresh org users (including members who joined
+  /// after this Home screen first loaded), so our local [orgUsers] snapshot can
+  /// be stale. Refresh the targeting dataset before resolving — otherwise a
+  /// newly-joined user would be dropped by the resolver and counted as 0.
+  Future<void> _applyRecipientResult(AlertRecipientsSelection? result) async {
+    if (result == null || !mounted) return;
+    await _loadOrgTargetingData();
+    if (!mounted) return;
+    setState(() {
+      alertRecipients = result;
+      _invalidateResolver();
+    });
+  }
+
   int get _recipientCount => _resolvedRecipients.count;
 
   String get _recipientsDisplayLabel =>
@@ -526,12 +542,7 @@ class _LeaderHomeScreenState extends State<LeaderHomeScreen> {
                                   ),
                                 ),
                               );
-                              if (result != null && mounted) {
-                                setState(() {
-                                  alertRecipients = result;
-                                  _invalidateResolver();
-                                });
-                              }
+                              await _applyRecipientResult(result);
                             },
                             icon: const Icon(Icons.tune, color: KlychTheme.textSecondary),
                           ),
@@ -543,8 +554,9 @@ class _LeaderHomeScreenState extends State<LeaderHomeScreen> {
                       ),
                     ),
                     const SizedBox(height: KlychTheme.spaceMd),
-                    // Primary action: large message composition area.
-                    // Fixed height ~24mm on modern iPhones (≈6 logical px / mm).
+                    // Message composer: comfortable multi-line height (~150px, about
+                    // half of the previous dominant size) leaving more room for the
+                    // recipients row and history below.
                     Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: KlychTheme.spaceLg,
@@ -589,12 +601,7 @@ class _LeaderHomeScreenState extends State<LeaderHomeScreen> {
                                     ),
                                   ),
                                 );
-                                if (result != null && mounted) {
-                                  setState(() {
-                                    alertRecipients = result;
-                                    _invalidateResolver();
-                                  });
-                                }
+                                await _applyRecipientResult(result);
                               },
                               child: Text(
                                 _recipientsDisplayLabel,
@@ -635,7 +642,7 @@ class _LeaderHomeScreenState extends State<LeaderHomeScreen> {
                       ),
                     ),
                     const SizedBox(height: KlychTheme.spaceSm),
-                    // Secondary: alert history fills the remaining space below the composer.
+                    // Alert history fills the remaining space below the composer.
                     Expanded(
                       child: RefreshIndicator(
                           onRefresh: _loadAlertHistory,
