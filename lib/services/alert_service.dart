@@ -1,20 +1,15 @@
-import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
 import '../models/alert_exceptions.dart';
 import '../models/alert_constants.dart';
-import '../models/alert_target_spec.dart';
 import '../models/alert_recipients_selection.dart';
-import '../models/alert_targeting.dart';
-import '../services/alert_delivery_service.dart';
-import '../services/recipient_resolver.dart';
-import '../services/group_service.dart';
-import '../services/user_org_service.dart';
-import '../services/alert_receipt_service.dart';
 
 class AlertService {
-  /// Creates alert + targets + receipts. On failure after alert insert, deletes
-  /// the alert row (CASCADE removes targets, target_users, receipts).
+  /// Creates the alert, its targets, target-users and receipts atomically via a
+  /// single transactional Postgres function (`create_alert`). The whole write is
+  /// one transaction: any failure (including zero recipients) rolls everything
+  /// back server-side, so no orphan alert can exist without receipts.
   static Future<Map<String, dynamic>> createAlert({
     required String organizationId,
     required String message,
@@ -23,98 +18,39 @@ class AlertService {
     required String senderUserId,
     bool isTest = false,
   }) async {
-    final orgUsers = await UserOrgService.fetchOrgUsers(organizationId);
-    final orgGroups = await GroupService.fetchGroups(organizationId);
-
-    final resolved = recipients.resolveRecipients(
-      users: orgUsers,
-      groups: orgGroups,
-      excludeUserId: senderUserId,
-    );
-
-    if (!resolved.canSend) {
-      throw NoRecipientsException();
-    }
-
-    final targets = recipients.toTargetSpecs(
-      users: orgUsers,
-      groups: orgGroups,
-    );
-
-    if (targets.isEmpty) {
-      throw NoRecipientsException();
-    }
-    assert(
-      AlertTargeting.serverSideEnabled || targets.isNotEmpty,
-      'recipients required',
-    );
-
-    final alertRow = await supabase
-        .from('alerts')
-        .insert({
-          'organization_id': organizationId,
-          'message': message,
-          'level': level,
-          'sender_user_id': senderUserId,
-          'is_test': isTest,
-        })
-        .select()
-        .single();
-
-    final alertId = alertRow['id'].toString();
-
     try {
-      for (final target in targets) {
-        if (target.type == AlertTargetSpec.users) {
-          await supabase.from('alert_targets').insert({
-            'alert_id': alertId,
-            'target_type': AlertTargetSpec.users,
-          });
+      final result = await supabase.rpc('create_alert', params: {
+        'p_organization_id': organizationId,
+        'p_message': message,
+        'p_level': level,
+        'p_sender_user_id': senderUserId,
+        'p_is_test': isTest,
+        'p_org_wide': recipients.orgWide,
+        'p_status_codes': recipients.statusCodes.toList(),
+        'p_department_ids': recipients.departmentIds.toList(),
+        'p_group_ids': recipients.groupIds.toList(),
+        'p_user_ids': recipients.userIds.toList(),
+      });
 
-          for (final userId in target.userIds) {
-            await supabase.from('alert_target_users').insert({
-              'alert_id': alertId,
-              'user_id': userId,
-            });
-          }
-        } else {
-          await supabase.from('alert_targets').insert(
-            target.toAlertTargetRow(alertId),
-          );
-        }
-      }
-
-      final recipientIds = (await AlertDeliveryService.resolveRecipientIdsForAlert(
-        alertId: alertId,
-        organizationId: organizationId,
-      ))
-          .where((id) => id != senderUserId)
-          .toList();
-
-      if (recipientIds.isEmpty) {
+      final rows = result as List<dynamic>;
+      if (rows.isEmpty) {
         throw NoRecipientsException();
       }
 
-      await AlertReceiptService.createReceiptsForAlert(
-        alertId: alertId,
-        userIds: recipientIds,
-      );
-    } catch (e, st) {
-      debugPrint('AlertService.createAlert rollback alert=$alertId: $e\n$st');
-      try {
-        await AlertDeliveryService.deleteAlert(alertId);
-      } catch (rollbackError) {
-        debugPrint('AlertService.createAlert rollback failed: $rollbackError');
+      final row = Map<String, dynamic>.from(rows.first as Map);
+      final count = (row['recipient_count'] as num?)?.toInt() ?? 0;
+
+      return {
+        ...row,
+        'recipient_count': count,
+        'target_label': recipients.recipientsLabel(count: count),
+      };
+    } on PostgrestException catch (e) {
+      if (e.message.contains('NO_RECIPIENTS')) {
+        throw NoRecipientsException();
       }
       rethrow;
     }
-
-    final label = recipients.recipientsLabel(count: resolved.count);
-
-    return {
-      ...Map<String, dynamic>.from(alertRow),
-      'target_label': label,
-    };
   }
 
   static String defaultMessage(String level) {
