@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/user_role.dart';
 import 'navigation/role_navigation.dart';
+import 'services/push_service.dart';
 import 'theme/klych_theme.dart';
 import 'screens/start_screen.dart';
 
@@ -18,6 +19,11 @@ Future<void> main() async {
     url: 'https://wvaqqlitzzlaelkvmnyi.supabase.co',
     anonKey: 'sb_publishable_nCbSA8vx9QXVJWUPAvcBBQ_DO0NIBto',
   );
+
+  // Push readiness (Phase 1): initialize Firebase core only. Guarded — on
+  // failure the app continues with the existing Realtime-only alert delivery.
+  // No permission prompt, token registration, or message handling happens yet.
+  await PushService.initializeApp();
 
   // Блокування горизонтального режиму (тільки портретна орієнтація)
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
